@@ -25,8 +25,8 @@ def run(name: str, body: bytes) -> tuple[int, dict]:
             return 200, fn(d)
     except service.InputError as e:
         return 400, dict(error=str(e))
-    except json.JSONDecodeError:
-        return 400, dict(error="입력 형식이 맞지 않아요")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return 400, dict(error="입력 형식이 맞지 않아요 (UTF-8 JSON으로 보내 주세요)")
     except Exception:  # noqa: BLE001 — 화면에는 짧게, 서버 기록에는 자세히
         traceback.print_exc()
         return 500, dict(error="계산 중 문제가 생겼어요. 조건을 바꿔 다시 해 보세요")

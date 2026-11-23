@@ -35,8 +35,8 @@ pnpm install && pnpm dev            # 화면 http://localhost:3000 (/api/* 는 �
 
 ## 배포 (Vercel)
 
-같은 저장소를 Vercel에 올리면 `src/` 는 Next.js로, `api/*.py` 는 파이썬 함수로 함께 배포된다(`vercel.json` 에서
-`engine/**` 자료를 함수에 포함, 최대 60초). 첫 호출은 자료를 읽느라 몇 초 걸리고, 이후 계산은 1초 안팎이다.
+같은 저장소를 Vercel에 올리면 `src/` 는 Next.js로, `api/*.py` 는 파이썬 함수로 함께 배포된다(따로 설정할 것 없음.
+`vercel.json` 에 `functions` 를 넣으면 Next.js 프로젝트에서 'doesn't match any Serverless Functions' 오류가 난다). 첫 호출은 자료를 읽느라 몇 초 걸리고, 이후 계산은 1초 안팎이다.
 '답이 뒤집히는 조건'(flips)은 엔진을 여러 번 다시 돌려 3~4초 걸리므로 화면에서 따로 불러온다.
 
 ## 한계 (기획안 '한계와 대응'과 같음)

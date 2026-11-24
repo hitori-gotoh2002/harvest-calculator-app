@@ -283,13 +283,18 @@ export default function App() {
   const N = calc?.years.length ?? 34; // 계산에 쓴 날씨 해 수 (최근 20년만 켜면 20)
   const openCalendar = (label: string) => { setCalLabel(label); go("result", "calendar"); };
   const openPlans = () => go("result", "plans");
-  // 요약 카드: 누르면 자세한 화면으로
-  const summary = calc && <div className="summary-grid">
-    <button className="summary-card" onClick={openPlans}><span>지금 작물({calc.input.current_name}) 보통 해</span><strong>{cur ? won(cur.mid) : "심기 어려움"}</strong></button>
-    <button className="summary-card" onClick={openPlans}><span>나쁜 해 평균</span><strong>{cur ? won(cur.bad20) : "-"}</strong></button>
-    <button className="summary-card" onClick={() => cur ? openCalendar(cur.label) : openPlans()}><span>돈이 가장 모자라는 달</span><strong>{cur ? `${cur.trough_month} ${signedWon(cur.trough)}` : "-"}</strong></button>
-    <button className="summary-card warm" onClick={() => go("recommend")}><span>균형 추천</span><strong>{calc.balanced.label}</strong></button>
-  </div>;
+  // 요약 카드: 누르면 자세한 화면으로. 기본은 지금 작물, 달력에서 다른 안을 보면 그 안의 숫자(아래 달력과 같은 값)
+  const summaryFor = (o: Option | null, viewing: boolean) => calc && <>
+    {viewing && o && <p className="sum-cap">지금 보는 안: <b>{o.label}</b></p>}
+    <div className="summary-grid">
+      <button className="summary-card" onClick={openPlans}><span>{viewing ? "보통 해" : `지금 작물(${calc.input.current_name}) 보통 해`}</span><strong>{o ? won(o.mid) : "심기 어려움"}</strong></button>
+      <button className="summary-card" onClick={openPlans}><span>나쁜 해 평균</span><strong>{o ? won(o.bad20) : "-"}</strong></button>
+      <button className="summary-card" onClick={() => o ? openCalendar(o.label) : openPlans()}><span>돈이 가장 모자라는 달</span><strong>{o ? `${o.trough_month} ${signedWon(o.trough)}` : "-"}</strong></button>
+      {viewing && o && cur && o.label !== cur.label
+        ? <button className="summary-card warm" onClick={openPlans}><span>지금 작물보다 (보통 해)</span><strong>{signedWon(o.mid - cur.mid)}</strong></button>
+        : <button className="summary-card warm" onClick={() => go("recommend")}><span>균형 추천</span><strong>{calc.balanced.label}</strong></button>}
+    </div></>;
+  const summary = summaryFor(cur, false);
   const notice = <section className="notice"><b>꼭 확인해 주세요</b><ul>
     <li>지난 {N}년 날씨와 그해 가격으로 이 땅의 농사를 다시 지어 본 계산 범위예요. 날씨를 예측하지 않아요.</li>
     <li>나쁜 해 평균은 손익이 가장 낮은 20%의 평균이에요. 가장 큰 손실을 뜻하지 않아요.</li>
@@ -492,7 +497,7 @@ export default function App() {
       <section className="page-hero"><div><p>다른 작물을 심으면</p><h2>손익이 어떻게 달라질까요?</h2></div>
         <img src="/figma/calculator.webp" alt="" width={112} height={98} /></section>
       {staleError}
-      {summary}
+      {tab === "calendar" ? summaryFor(o, true) : summary}
       {conds}
       <div className="tabs"><button className={tab === "plans" ? "on" : ""} onClick={() => { if (tab !== "plans") showPlans(); }}>재배안 비교</button>
         <button className={tab === "calendar" ? "on" : ""} onClick={() => go("result", "calendar")}>돈 흐름 달력</button></div>

@@ -128,7 +128,7 @@ export async function post<T>(name: string, body: object = {}): Promise<T> {
 }
 
 export const won = (v: number | null | undefined) =>
-  v == null ? "-" : `${Math.round(v).toLocaleString("ko-KR")}만 원`;
+  v == null ? "-" : `${Math.round(v) < 0 ? "−" : ""}${Math.abs(Math.round(v)).toLocaleString("ko-KR")}만 원`; // 빼기는 signedWon 과 같은 '−'
 export const signedWon = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(Math.round(v)).toLocaleString("ko-KR")}만 원`;
 export const pct = (x: number) => `${Math.round(x * 100)}%`;
 export const mmdd = (s: string) => `${Number(s.slice(0, 2))}월 ${Number(s.slice(3, 5))}일`;

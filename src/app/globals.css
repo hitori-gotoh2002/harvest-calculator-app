@@ -133,3 +133,7 @@ section.notice li+li{margin-top:4px}
 .row2>*{min-width:0}
 .field input[type=date]{min-width:0}
 @media(max-width:360px){.page-header h1{font-size:18px}.page-header .edit-link{max-width:42%;font-size:11px}}
+
+/* 요약 카드가 어떤 안을 보여 주는지 */
+.sum-cap{margin:0 0 8px;font-size:13px;color:#4f5c53}
+.sum-cap b{color:#17211a}

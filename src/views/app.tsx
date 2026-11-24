@@ -87,7 +87,7 @@ export default function App() {
   const [farmErr, setFarmErr] = useState("");
   const [farmPlan, setFarmPlan] = useState("");
   const [farmYear, setFarmYear] = useState(2026);
-  const [dis, setDis] = useState({ crop: "", year: 2026, sown: "06-10", hit: "07-20", damage: "", fixCost: "", fixShare: "30", sup1: "0", sup2: "0", example: false });
+  const [dis, setDis] = useState({ crop: "", year: 2026, sown: "", hit: "07-20", damage: "", fixCost: "", fixShare: "30", sup1: "0", sup2: "0", example: false });
   const [disOut, setDisOut] = useState<DisasterOut | null>(null);
   const [disBusy, setDisBusy] = useState(false);
   const [disErr, setDisErr] = useState("");
@@ -134,32 +134,37 @@ export default function App() {
       setScreen(h);
     }
     const onPop = (e: PopStateEvent) => {
-      setScreen(((e.state as { screen?: Screen } | null)?.screen) ?? "home");
+      // 주소의 #화면 만 바뀐 경우(같은 탭에서 공유 링크 열기 등)에는 기록에 화면이 없으므로 주소를 따른다
+      const h = window.location.hash.slice(1) as Screen;
+      setScreen(((e.state as { screen?: Screen } | null)?.screen) ?? (h && h in TITLE ? h : "home"));
       window.scrollTo({ top: 0 });
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  const runFarm = useCallback(async (i: FarmInput, o: Option | undefined, year: number) => {
-    if (!o) return;
+  // plan = "balanced" 이면 서버가 균형 추천을 스스로 골라 계산한다 (첫 화면에서 calc 와 동시에 부르려고)
+  const runFarm = useCallback(async (i: FarmInput, plan: { alt: string; share: number } | "balanced" | undefined, year: number) => {
+    if (!plan) return;
     setFarmBusy(true); setFarmErr("");
     try {
-      setFarm(await post<Farm>("farm", { ...i, alt: o.plan.alt, share: o.plan.share, year }));
+      setFarm(await post<Farm>("farm", plan === "balanced" ? { ...i, plan, year } : { ...i, alt: plan.alt, share: plan.share, year }));
     } catch (e) { setFarmErr((e as Error).message); setFarm(null); } finally { setFarmBusy(false); }
   }, []);
 
   const run = useCallback(async (i: FarmInput, light = false, mine = false) => {
     setBusy(true); setError("");
     try {
-      const c = await post<Calc>("calc", i);
+      const calcP = post<Calc>("calc", i);
+      const farmP = light ? null : runFarm(i, "balanced", 2026); // 내 농장은 calc 와 동시에
+      const c = await calcP;
       setCalc(c); setInput(i); setDraft(i);
       if (mine) { saveInput(i); setTouched(true); } else { try { if (localStorage.getItem(STORE) !== null) saveInput(i); } catch { /* 저장 못 해도 됨 */ } }
       if (light) return true; // 대금 방식만 바꾼 경우: 보고 있던 달력 그대로
       setCalLabel(c.balanced.label); setFarmPlan(c.balanced.label); setFarmYear(2026);
       setFlips(null); setFlipsErr("");
       // 홈에 바로 보이는 내 농장을 먼저, 오래 걸리는 '답이 뒤집히는 조건'은 그다음에 계산한다
-      runFarm(i, c.balanced, 2026).finally(() =>
+      (farmP ?? Promise.resolve()).finally(() =>
         post<Flips>("flips", i).then(setFlips).catch(e => setFlipsErr((e as Error).message)));
       return true;
     } catch (e) {
@@ -246,7 +251,7 @@ export default function App() {
         <div className="weather"><span>{meta ? `날씨 자료 ${mmdd(meta.weather_until.slice(5))}까지` : "날씨 불러오는 중"}</span>
           <button className="icon-btn text" onClick={() => go("input")}><MapPin size={16} /> {input.region}</button></div>
         <h1>올해 {eun(input.region)}<br /><b>{word[0]}</b>{word[1]}</h1>
-        {c0 && c0.rain != null && <button className="weather-pill" onClick={() => go("farm")}>심은 뒤 비 {c0.rain}mm · 평년 {c0.normal_rain}mm · 큰비 {c0.heavy_rain}번</button>}
+        {c0 && c0.rain != null && <button className="weather-pill" onClick={() => go("farm")}>심은 뒤 비 {c0.rain}mm · {c0.normal_rain != null ? `평년 ${c0.normal_rain}mm · ` : ""}큰비 {c0.heavy_rain}번</button>}
       </header>
       <main className="home-main">
         {!touched && calc && <div className="first"><b>지금은 예시 농가 결과예요</b>
@@ -283,7 +288,7 @@ export default function App() {
             <p>농장 평수 <b>{farm.area_py.toLocaleString("ko-KR")}평</b></p>
           </div></div>
           <small>균형 추천을 심었다고 보고 {mmdd(farm.today)}까지 실제 날씨 반영 · 눌러서 자세히</small></button>
-          : <div className="farm">{farmErr ? errBox(farmErr, () => calc && runFarm(input, calc.balanced, 2026)) : <small>내 농장을 계산하는 중이에요…</small>}</div>}
+          : <div className="farm">{farmErr ? errBox(farmErr, () => runFarm(input, "balanced", 2026)) : <small>내 농장을 계산하는 중이에요…</small>}</div>}
         <button className="button" onClick={() => go("input")}>내 땅 조건 바꿔 계산하기</button>
         {notice}
       </main>
@@ -365,9 +370,9 @@ export default function App() {
           <option value="양파·마늘 거둔 뒤">양파·마늘 거둔 뒤 (6월 10일부터)</option><option value="없음">없음 (봄부터 심을 수 있음)</option></select></label>
         <label className="field">팔 수 있는 곳<select value={d.sales} onChange={e => set({ sales: e.target.value })}>
           {(meta?.sales ?? [d.sales]).map(s => <option key={s}>{s}</option>)}</select></label>
-        <label className="field">작부를 정하는 날<input type="date" min="2026-01-01" max="2026-10-31" value={`2026-${d.decision || defDay}`}
+        <label className="field">작부를 정하는 날<input type="date" min="2026-01-01" max="2026-07-31" value={`2026-${d.decision || defDay}`}
           onChange={e => set({ decision: e.target.value ? e.target.value.slice(5) : "" })} />
-          <small>이 날 뒤에 심는다고 보고 심는 날을 정해요.</small></label>
+          <small>이 날 뒤에 심는다고 보고 심는 날을 정해요. 여름 작물(3~7월에 심음)을 비교하므로 7월까지 골라요.</small></label>
       </details>
       <details><summary>조건 바꿔 보기</summary>
         <label className="check">최근 20년(2006~2025) 날씨만<input type="checkbox" checked={d.recent} onChange={e => set({ recent: e.target.checked })} /></label>
@@ -468,11 +473,11 @@ export default function App() {
           <p>한 해 평균 {won(b.mean)} · 나쁜 해 평균 {won(b.bad20)}</p>
           <p>필요한 시작 자금 {won(b.need90)} · 가진 돈으로 버티는 경우 {pct(b.survive)}</p></article>
         <article className="recommend peach tap" {...card(m)}><b>수익을 더 내고 싶다면?</b><h3>{m.label}</h3>
-          <p>보통 해 {won(m.mid)}, 좋은 해 {won(m.hi90)}</p><p>대신 나쁜 쪽 10%는 {won(m.lo10)}까지 내려가요</p><p>{vs(m)}</p></article>
+          <p>보통 해 {won(m.mid)}, 좋은 해 {won(m.hi90)}</p><p>대신 나쁜 쪽 10%는 {won(m.lo10)}까지 내려가요</p><p>{vs(m)}</p>{m.label === b.label && <p className="same">균형 추천과 같은 안이에요</p>}</article>
         <article className="recommend blue tap" {...card(s)}><b>나쁜 해를 대비하고 싶다면?</b><h3>{s.label}</h3>
           <p>가장 나쁜 5% 평균이 가장 높은 안: {won(s.worst5)}</p>
           <p>가장 나빴던 한 경우 {won(s.worst)}{cur && cur.label !== s.label ? ` (지금 작물 ${won(cur.worst)})` : ""}</p>
-          <p>보통 해 {won(s.mid)} · 직접 일하는 시간 {s.labor_h.toLocaleString("ko-KR")}시간</p></article>
+          <p>보통 해 {won(s.mid)} · 직접 일하는 시간 {s.labor_h.toLocaleString("ko-KR")}시간</p>{s.label === b.label && <p className="same">균형 추천과 같은 안이에요</p>}</article>
         <article className="recommend green tap" {...card(e)}><b>더 쉽게 짓고 싶다면?</b><h3>{e.label}</h3>
           <p>직접 일하는 시간 {e.labor_h.toLocaleString("ko-KR")}시간{cur ? ` (지금 ${cur.labor_h.toLocaleString("ko-KR")}시간)` : ""}</p>
           <p>보통 해 {won(e.mid)} · {vs(e)}</p></article>
@@ -528,14 +533,14 @@ export default function App() {
     return <main className="content">
       <p className="muted">심은 날부터 기준 날짜까지는 그해 실제 날씨로, 남은 기간은 지난 34년 날씨를 하나씩 이어 붙여 다시 계산해요. 앞으로의 날씨를 맞히지는 않아요.</p>
       <label className="field tight">심은 안<select value={farmPlan} disabled={farmBusy}
-        onChange={e => { setFarmPlan(e.target.value); runFarm(input, opt(e.target.value), farmYear); }}>
+        onChange={e => { setFarmPlan(e.target.value); runFarm(input, opt(e.target.value)?.plan, farmYear); }}>
         {calc.options.map(o => <option key={o.label}>{o.label}</option>)}</select></label>
       <label className="field tight">어느 해 농사로 볼까요?<select value={farmYear} disabled={farmBusy}
-        onChange={e => { const y = Number(e.target.value); setFarmYear(y); runFarm(input, opt(farmPlan), y); }}>
+        onChange={e => { const y = Number(e.target.value); setFarmYear(y); runFarm(input, opt(farmPlan)?.plan, y); }}>
         {years.map(y => <option key={y} value={y}>{y === 2026 ? "2026년 (올해)" : y === 2020 ? "2020년 (긴 장마)" : y === 1994 ? "1994년 (큰 가뭄)" : `${y}년`}</option>)}</select>
         <small>지난 해를 고르면 그해 날씨를 처음부터 다시 겪어 봐요.</small></label>
       {farmBusy && <p className="loading">다시 계산하는 중이에요…</p>}
-      {errBox(farmErr, () => runFarm(input, opt(farmPlan), farmYear))}
+      {errBox(farmErr, () => runFarm(input, opt(farmPlan)?.plan, farmYear))}
       {farm && <>
         <div className="farm stat"><p>{farm.year}년 · {farm.label} · {mmdd(farm.today)} 기준</p>
           <strong className="big">{won(farm.now.mid)}</strong>
@@ -561,13 +566,16 @@ export default function App() {
   const disasterView = () => {
     const crops = meta?.crops[input.land] ?? [{ id: input.current, name: input.current }];
     const crop = crops.some(c => c.id === dis.crop) ? dis.crop : input.current;
+    // 심은 날을 직접 넣지 않았으면: 내 농장에서 그 작물을 심은 날 → 그 작물의 보통 심는 날 → 6월 10일
+    const sown = dis.example ? dis.sown : dis.sown || farm?.crops.find(c => c.crop === crop)?.sown
+      || meta?.crops[input.land].find(c => c.id === crop)?.sow || "06-10";
     const set = (p: Partial<typeof dis>) => setDis({ ...dis, ...p });
     const submit = async () => {
       setDisBusy(true); setDisErr("");
       const base = dis.example ? { ...input, land: "논", water: "수혜구역", drainage: "나쁨", current: "콩(논 재배)" } : input;
       try {
         setDisOut(await post<DisasterOut>("disaster", {
-          ...base, crop: dis.example ? "콩(논 재배)" : crop, year: dis.year, sown: dis.sown, hit: dis.hit,
+          ...base, crop: dis.example ? "콩(논 재배)" : crop, year: dis.year, sown, hit: dis.hit,
           damage: dis.damage === "" ? null : Number(dis.damage) / 100,
           fix_cost: dis.fixCost === "" ? null : Number(dis.fixCost), fix_share: Number(dis.fixShare) / 100,
           fix_support: Number(dis.sup1), replant_support: Number(dis.sup2),
@@ -577,14 +585,14 @@ export default function App() {
     return <main className="content">
       <p className="muted">재해가 난 날 기준으로 남은 기간을 지난 34년 날씨로 계산해, 이미 쓴 비용까지 넣은 그해 손익으로 견줘요.</p>
       <div className="chips"><button type="button" className={`chip ${dis.example ? "selected" : ""}`}
-        onClick={() => set(dis.example ? { example: false, year: 2026, sown: "06-10", hit: "07-20" } : { example: true, year: 2020, sown: "06-15", hit: "07-14" })}>
+        onClick={() => set(dis.example ? { example: false, year: 2026, sown: "", hit: "07-20" } : { example: true, year: 2020, sown: "06-15", hit: "07-14" })}>
         예시: 2020년 장마, 배수 나쁜 논 논콩</button></div>
-      {!dis.example && <label className="field tight">피해 입은 작물<select value={crop} onChange={e => set({ crop: e.target.value })}>
+      {!dis.example && <label className="field tight">피해 입은 작물<select value={crop} onChange={e => set({ crop: e.target.value, sown: "" })}>
         {crops.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>}
       <div className="row2">
         <label className="field tight">연도<select value={dis.year} onChange={e => set({ year: Number(e.target.value) })}>
           {[2026, ...Array.from({ length: 34 }, (_, i) => 2025 - i)].map(y => <option key={y} value={y}>{y}년</option>)}</select></label>
-        <label className="field tight">심은 날<input type="date" min={`${dis.year}-01-01`} max={`${dis.year}-12-31`} value={`${dis.year}-${dis.sown}`} onChange={e => e.target.value && set({ sown: e.target.value.slice(5) })} /></label>
+        <label className="field tight">심은 날<input type="date" min={`${dis.year}-01-01`} max={`${dis.year}-12-31`} value={`${dis.year}-${sown}`} onChange={e => e.target.value && set({ sown: e.target.value.slice(5) })} /></label>
       </div>
       <div className="row2">
         <label className="field tight">재해 난 날<input type="date" min={`${dis.year}-01-01`} max={`${dis.year}-12-31`} value={`${dis.year}-${dis.hit}`} onChange={e => e.target.value && set({ hit: e.target.value.slice(5) })} /></label>
@@ -623,6 +631,7 @@ export default function App() {
     const drs = ["좋음", "보통", "나쁨"];
     const cell = (w: string, dd: string) => g?.cells.find(x => x.water === w && x.drainage === dd);
     return <main className="content">
+      {input.land === "밭" && <p className="notice small">이 화면은 기획안 분석 결과 2의 <b>논 기준</b> 비교예요. 밭은 '작물 추천'과 '가뭄·큰비 위험'에서 내 밭 조건으로 계산해요.</p>}
       <p className="muted">같은 {input.region}의 논이라도 물 대는 방법과 물 빠짐에 따라 답이 갈려요. 지금 벼를 심는 논, 일손 {input.labor} 기준이에요.
         평균 소득 자료(직불금 포함)의 1위 작물과 수확계산기의 답을 나란히 봐요.</p>
       {!calc && (mainError || <p className="loading">계산하는 중이에요…</p>)}
@@ -658,7 +667,7 @@ export default function App() {
           <h3>가장 가물었던 {h.n}년과 비가 가장 많았던 {h.n}년</h3>
           <label className="field tight">함께 견줄 작물<select value={climateAlt || h.alt} onChange={e => setClimateAlt(e.target.value)}>
             {h.alts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-          <table className="tbl"><thead><tr><th>{c.area_py.toLocaleString("ko-KR")}평</th><th>가문 해</th><th>비 많은 해</th><th>{h.years}년 평균</th><th>흔들림</th><th>나쁜 해</th></tr></thead>
+          <table className="tbl"><thead><tr><th>{c.area_py.toLocaleString("ko-KR")}평</th><th>가문 해</th><th>비 많은 해</th><th>평균</th><th>흔들림</th><th>나쁜 해</th></tr></thead>
             <tbody>{h.rows.map(r => <tr key={r.name}><td>{r.name}</td><td>{r.dry}</td><td>{r.wet}</td><td>{r.mean}</td><td>{r.std}</td><td>{r.bad20}</td></tr>)}</tbody></table>
           <p className="muted">만 원. 해마다 손익(가격 5가지 평균) {h.years}개 기준. 흔들림 = 해마다 손익의 표준편차, 나쁜 해 = 가장 나쁜 20%의 평균.
             가문 해 {h.dry_years.join("·")}, 비 많은 해 {h.wet_years.join("·")} ({c.current_name} 작기의 비 − 증발량 기준).</p>

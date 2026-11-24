@@ -39,8 +39,9 @@ class InputError(ValueError):
 
 
 def num(d: dict, key: str, default: float, lo: float, hi: float, label: str, allow_none: bool = False):
-    """숫자 입력을 안전하게 읽는다. 비었거나(None·'') 숫자가 아니거나 범위를 벗어나면 화면용 오류."""
-    v = d.get(key, default)
+    """숫자 입력을 안전하게 읽는다. 비었거나(None·'') 숫자가 아니거나 범위를 벗어나면 화면용 오류.
+    allow_none 이면 값이 없을 때(키가 없거나 빈 칸) None 을 돌려준다 — '비우면 계산값' 칸(피해율·공사비 등)."""
+    v = d.get(key, None if allow_none else default)
     if v is None or v == "":
         if allow_none:
             return None
@@ -229,6 +230,12 @@ def r0(x) -> float:
     return float(round(float(x)))
 
 
+def rn(x):
+    """빈 값(NaN)일 수 있는 숫자: 비었으면 None (예: 1992년은 앞선 해가 없어 '평년 비'가 없음)."""
+    x = float(x)
+    return None if x != x else x
+
+
 def last_weather_day(region: str) -> date:
     P = E.weather(region)[YEAR][0]
     ok = np.nonzero(~np.isnan(P))[0]
@@ -239,7 +246,12 @@ def last_weather_day(region: str) -> date:
 # ---------------------------------------------------------------- 메타 (화면 선택지)
 def meta(_: dict | None = None) -> dict:
     regs = [dict(name=x["name"], reservoir_obs=x["name"] in OBS_RESERVOIR) for x in E.regions()]
-    return dict(regions=regs, crops={land: [dict(id=c, name=nm(c)) for c in summer_crops(land)] for land in ("논", "밭")},
+    def sow(c, land):
+        g = E.Field(land=land, current=c, free_from="06-10" if land == "논" else "01-01")
+        s, _ = E.plan_season(E.crop_row(c), g, E.doy("06-01" if land == "논" else "04-01"))
+        return E.NONLEAP[s.sow].strftime("%m-%d") if s is not None else None
+
+    return dict(regions=regs, crops={land: [dict(id=c, name=nm(c), sow=sow(c, land)) for c in summer_crops(land)] for land in ("논", "밭")},
                 sales=list(E.SALES_OK), prev=list(PREV), weather_until=last_weather_day("합천").isoformat(), year=YEAR)
 
 
@@ -318,6 +330,30 @@ def _flips(f, decision, excl, base_label, alt):
                     seen = ans
                 if ans == keep:
                     break
+        else:  # 지금 작물 그대로가 추천: 답이 바뀌는 가장 작은 변화를 이분 탐색으로 찾는다 (최대 30%)
+            def first_change(crop, sign):
+                lo, hi = 0, 30
+                top = with_revenue(crop, 1 + sign * hi / 100)
+                if top == base_label:
+                    return None
+                while hi - lo > 1:
+                    mid = (lo + hi) // 2
+                    if with_revenue(crop, 1 + sign * mid / 100) == base_label:
+                        lo = mid
+                    else:
+                        hi = mid
+                return hi, with_revenue(crop, 1 + sign * hi / 100)
+
+            hit = first_change(f.current, -1)
+            out.append(dict(cond=f"{nm(f.current)} 판매수입이 {hit[0]}% 낮으면", answer=hit[1]) if hit
+                       else dict(cond=f"{nm(f.current)} 판매수입이 30% 낮아도", answer=base_label))
+            r0_ = E.compare(f, YEAR, decision, excl)["results"]
+            others = [(c, E.score(v[2])[0]) for c, v in r0_.items() if c != f.current]
+            if others:
+                rival = max(others, key=lambda x: x[1])[0]
+                hit = first_change(rival, +1)
+                out.append(dict(cond=f"{nm(rival)} 값이 {hit[0]}% 높으면", answer=hit[1]) if hit
+                           else dict(cond=f"{nm(rival)} 값이 30% 높아도", answer=base_label))
     for x in out:
         x["changed"] = x["answer"] != base_label
     return out
@@ -403,8 +439,16 @@ def farm(d: dict) -> dict:
     year = int(num(d, "year", YEAR, 1992, YEAR, "연도"))
     if not 1992 <= year <= YEAR:
         raise InputError("연도는 1992~2026년 사이로 골라 주세요")
-    alt = d.get("alt") or f.current
-    share = num(d, "share", 0.0 if alt == f.current else 1.0, 0, 1, "섞는 비율")
+    if d.get("plan") == "balanced":  # 첫 화면: calc 를 기다리지 않고 균형 추천을 여기서 바로 고른다
+        try:
+            rb = E.compare(f, YEAR, decision, excl)
+        except ValueError as e:
+            raise InputError("이 날짜와 조건에서 심을 수 있는 작물이 없어요") from e
+        p = rb["plan"]
+        alt, share = p["alt"], (p["share"] if f.current in rb["results"] else 1.0)
+    else:
+        alt = d.get("alt") or f.current
+        share = num(d, "share", 0.0 if alt == f.current else 1.0, 0, 1, "섞는 비율")
     plan = dict(plan="", alt=alt, share=share)
     sown = d.get("sown")
     try:
@@ -431,7 +475,7 @@ def farm(d: dict) -> dict:
         x = dict(crop=crop, name=nm(crop), sown=fs.sown[crop], days=int(p.get("지난날수", 0)), length=int(p.get("생육일수", 0)),
                  progress=float(p.get("진행률", 0.0)))
         if "비" in p:
-            x.update(rain=r0(p["비"]), normal_rain=r0(p["평년비"]), rain_rank=float(p["비순위"]),
+            x.update(rain=r0(p["비"]), normal_rain=None if rn(p["평년비"]) is None else r0(p["평년비"]), rain_rank=rn(p["비순위"]),
                      heavy_rain=int(p.get("큰비횟수", 0)), water_ok=float(p.get("물충족률", 1.0)))
         crops_now.append(x)
     actual = None
@@ -459,7 +503,7 @@ def disaster(d: dict) -> dict:
         raise InputError("연도는 1992~2026년 사이로 골라 주세요")
     sown, hit = d.get("sown", "06-10"), d.get("hit", "07-20")
     if year == YEAR and E.doy(hit) > E.doy(last_weather_day(f.region).strftime("%m-%d")):
-        raise InputError(f"재해 난 날은 날씨 자료가 있는 {last_weather_day(f.region):%m월 %d일}까지 넣을 수 있어요")
+        raise InputError(f"재해 난 날은 날씨 자료가 있는 {last_weather_day(f.region).month}월 {last_weather_day(f.region).day}일까지 넣을 수 있어요")
     if E.doy(hit) <= E.doy(sown):
         raise InputError("재해 난 날은 심은 날 뒤여야 해요")
     cost0 = float(E.crop_row(crop)["경영비_천원"])

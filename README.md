@@ -50,6 +50,16 @@ python dev_api.py                   # 계산 서버 http://127.0.0.1:8000
 pnpm install && pnpm dev            # 화면 http://localhost:3000 (/api/* 는 계산 서버로 넘어감)
 ```
 
+## 테스트 (기획안 숫자 지키기)
+
+```
+python -m unittest discover -s tests -v    # 1분쯤, numpy·pandas 필요
+```
+
+`tests/test_plan_numbers.py` 는 기획안 데이터 부분의 숫자(대표 사례 표, 결과 1~4)를 계산 API 가 그대로 내는지,
+잘못된 입력에 500 대신 안내(400)로 답하는지 확인한다. 기대값은 기획안 본문의 값이다. GitHub 에 올리면
+`.github/workflows/test.yml` 이 같은 테스트를 자동으로 돌린다. 테스트가 깨지면 기획안 숫자가 바뀐 것이다.
+
 ## 배포 (Vercel)
 
 배포 주소: https://harvest-calculator-app.vercel.app (main 에 올리면 자동 배포).

@@ -73,3 +73,8 @@ button.farm{display:block;width:100%;border:0;font:inherit;color:#17211a}
 .error{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .error .link{color:#9c2c2c;white-space:nowrap}
 .link:disabled{opacity:.5}
+/* 한국어는 낱말 중간에서 줄을 바꾸지 않음 (2026-11-24 점검) */
+body{word-break:keep-all;overflow-wrap:break-word}
+.plan-title{flex-wrap:wrap;row-gap:6px}
+.plan-title h3{flex:1 1 auto}
+.recommend .same{font-size:12px;color:#59665d;margin-top:6px}

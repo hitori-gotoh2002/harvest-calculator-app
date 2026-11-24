@@ -24,7 +24,7 @@ export type FarmInput = {
 
 export type Meta = {
   regions: { name: string; reservoir_obs: boolean }[];
-  crops: Record<"논" | "밭", { id: string; name: string }[]>;
+  crops: Record<"논" | "밭", { id: string; name: string; sow?: string | null }[]>;
   sales: string[];
   prev: string[];
   weather_until: string;

@@ -1,0 +1,15 @@
+# 기획안 숫자 테스트: main 에 올릴 때마다 계산 API 가 기획안과 같은 숫자를 내는지 확인한다.
+name: 기획안 숫자 테스트
+on:
+  push:
+  pull_request:
+jobs:
+  plan-numbers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v

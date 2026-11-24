@@ -15,6 +15,11 @@ export type FarmInput = {
   living: number; // 매달 생활비
   need: number; // 다음 해 2월에 남겨야 할 돈
   recent: boolean; // 최근 20년 날씨만
+  pump: "일반" | "작은" | "큰"; // 관정 하루 급수 10·5·15mm
+  rev_pct: Record<string, number>; // 올해 예상 판매수입 변화 % (작물별)
+  no_subsidy: string[]; // 직불금 자격이 없는 작물
+  pay_crop: string; // 대금 받는 방식을 바꿀 작물
+  pay_mode: "default" | "once" | "late";
 };
 
 export type Meta = {
@@ -52,6 +57,7 @@ export type Calc = {
   climate: { years: number; dry: number; wet: number } | null;
   breakeven: { alt: string; subsidy_gap: number; price_change: number | null } | null;
   excluded: { crop: string; why: string }[];
+  pay_options: Record<string, { mode: FarmInput["pay_mode"]; text: string }[]>;
   cases: number;
   years: number[];
 };
@@ -73,6 +79,28 @@ export type DisasterOut = {
   sunk: number; fix_cost: number; fix_share: number; heavy_rain: number; best: string; next_year: string[];
   area_py: number;
   options: { name: string; mid: number; lo10: number; mean: number; sow?: string }[];
+};
+
+export type DrainageOut = {
+  now: string; cost: number; own: number; support: number; current_name: string; area_py: number;
+  levels: { level: string; cur_mean?: number; cur_bad20?: number; cur_gain?: number; cur_payback?: number | null;
+    bal_label: string; bal_mean: number; bal_bad20: number; bal_gain?: number; bal_payback?: number | null }[];
+};
+
+export type YearRow = { name: string; dry: number; wet: number; mean: number; std: number; bad20: number; worst: number; loss_years: number };
+export type ClimateOut = {
+  region: string; current_name: string; area_py: number;
+  hedge?: { alt: string; alt_name: string; rows: YearRow[]; dry_years: number[]; wet_years: number[]; n: number; years: number;
+    std_cut: (number | null)[]; bad_gain: number[]; alts: { id: string; name: string }[] };
+  trend: { all: number; all_years: number; recent: number; recent_years: number; cur_all?: number; cur_recent?: number };
+  drought: { land: string; dry: number; years: number }[];
+  water?: { cur_mm: number; alt_mm: number; tons: number; kwh: number; kwh_per_m3: number; alt_name: string };
+};
+
+export type GridOut = {
+  region: string; area_py: number;
+  cells: { water: string; drainage: string; answer: string; rice_ok: boolean; alt: string; share: number; stat_best: string; same: boolean;
+    rice_mean?: number; rice_bad20?: number; soy_mean?: number; soy_bad20?: number }[];
 };
 
 export async function post<T>(name: string, body: object = {}): Promise<T> {

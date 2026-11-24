@@ -1,16 +1,21 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
-import { Home, Sprout, Calculator, ShieldCheck, ChevronLeft, MapPin, Bell, RefreshCw, Star, Tractor, ExternalLink } from "lucide-react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { Home, Sprout, Calculator, ShieldCheck, ChevronLeft, MapPin, Bell, RefreshCw, Star, Tractor, ExternalLink,
+  LayoutGrid, CloudRain, Shovel, BookOpen } from "lucide-react";
 import { post, won, signedWon, pct, mmdd } from "../lib/api";
-import type { Calc, DisasterOut, Farm, FarmInput, Flips, Meta, Option } from "../lib/api";
+import type { Calc, ClimateOut, DisasterOut, DrainageOut, Farm, FarmInput, Flips, GridOut, Meta, Option } from "../lib/api";
 import { DEFAULT_INPUT, DRAIN_LABEL, PRESETS, SUPPORTS, WATER_LABEL, landText } from "../lib/data";
+import { BACKTEST, BACKTEST_NOTE, BACKTEST_SUM, CHECKS, DATA_SOURCES, LIMITS, REGION, STEPS } from "../lib/method";
 
-type Screen = "home" | "input" | "result" | "recommend" | "support" | "farm" | "disaster";
-const STORE = "harvest-calculator-input-v1";
+type Screen = "home" | "input" | "result" | "recommend" | "support" | "farm" | "disaster" | "grid" | "climate" | "drainage" | "method";
+const STORE = "harvest-calculator-input-v2";
 const TITLE: Record<Screen, string> = {
   home: "", input: "내 땅 알려주기", result: "손익 시뮬레이션", recommend: "작물 추천",
   support: "지원 제도", farm: "내 농장 다시 계산", disaster: "재해 뒤 비교",
+  grid: "땅마다 다른 답", climate: "가뭄·큰비 위험", drainage: "배수 공사 값어치", method: "계산 방법·검증",
 };
+const PUMP_LABEL: Record<FarmInput["pump"], string> = { 일반: "보통 관정 (하루 10mm)", 작은: "작은 관정 (하루 5mm)", 큰: "큰 관정 (하루 15mm)" };
+const nameOf = (id: string) => (id === "콩(논 재배)" ? "논콩" : id);
 
 function loadInput(): FarmInput {
   try {
@@ -71,6 +76,25 @@ export default function App() {
   const [disOut, setDisOut] = useState<DisasterOut | null>(null);
   const [disBusy, setDisBusy] = useState(false);
   const [disErr, setDisErr] = useState("");
+  const [otherCrop, setOtherCrop] = useState("콩(논 재배)");
+  // 따로 불러오는 계산 (화면을 열 때, 입력이 바뀌었을 때만)
+  const [extra, setExtra] = useState<{ grid?: GridOut; climate?: ClimateOut; drainage?: DrainageOut }>({});
+  const [extraKey, setExtraKey] = useState<Record<string, string>>({});
+  const [extraBusy, setExtraBusy] = useState("");
+  const [extraErr, setExtraErr] = useState("");
+  const [climateAlt, setClimateAlt] = useState("");
+  const [drain, setDrain] = useState({ cost: "", support: "0" });
+  const [drainApplied, setDrainApplied] = useState<{ cost: number | null; support: number }>({ cost: null, support: 0 });
+
+  const loadExtra = useCallback(async (name: "grid" | "climate" | "drainage", body: object) => {
+    const key = JSON.stringify(body);
+    setExtraBusy(name); setExtraErr("");
+    try {
+      const out = await post<GridOut & ClimateOut & DrainageOut>(name, body);
+      setExtra(e => ({ ...e, [name]: out }));
+      setExtraKey(k => ({ ...k, [name]: key }));
+    } catch (e) { setExtraErr((e as Error).message); } finally { setExtraBusy(""); }
+  }, []);
 
   const go = (s: Screen) => { setScreen(s); window.scrollTo({ top: 0 }); };
 
@@ -82,11 +106,12 @@ export default function App() {
     } catch (e) { setFarmErr((e as Error).message); setFarm(null); } finally { setFarmBusy(false); }
   }, []);
 
-  const run = useCallback(async (i: FarmInput) => {
+  const run = useCallback(async (i: FarmInput, light = false) => {
     setBusy(true); setError("");
     try {
       const c = await post<Calc>("calc", i);
       setCalc(c); setInput(i); setDraft(i); saveInput(i);
+      if (light) return true; // 대금 방식만 바꾼 경우: 보고 있던 달력 그대로
       setCalLabel(c.balanced.label); setFarmPlan(c.balanced.label); setFarmYear(2026);
       setFlips(null); setFlipsErr("");
       // 홈에 바로 보이는 내 농장을 먼저, 오래 걸리는 '답이 뒤집히는 조건'은 그다음에 계산한다
@@ -105,6 +130,16 @@ export default function App() {
     setDraft(i);
     run(i);
   }, [run]);
+
+  useEffect(() => {
+    if (!calc) return;
+    const want = (name: "grid" | "climate" | "drainage", body: object) => {
+      if (extraKey[name] !== JSON.stringify(body) && extraBusy !== name) loadExtra(name, body);
+    };
+    if (screen === "grid") want("grid", input);
+    if (screen === "climate") want("climate", { ...input, alt: climateAlt || undefined });
+    if (screen === "drainage" && input.land === "논") want("drainage", { ...input, ...drainApplied });
+  }, [screen, calc, input, climateAlt, drainApplied, extraKey, extraBusy, loadExtra]);
 
   const opt = (label: string) => calc?.options.find(o => o.label === label);
   const cur = calc?.current ?? null;
@@ -154,6 +189,10 @@ export default function App() {
           <button onClick={() => go("recommend")}><span><Sprout /></span>작물 추천</button>
           <button onClick={() => go("support")}><span><ShieldCheck /></span>지원 제도</button>
           <button onClick={() => go("farm")}><span><RefreshCw /></span>다시 계산</button>
+          <button onClick={() => go("grid")}><span><LayoutGrid /></span>땅마다 답</button>
+          <button onClick={() => go("climate")}><span><CloudRain /></span>가뭄·큰비</button>
+          <button onClick={() => go("drainage")}><span><Shovel /></span>배수 공사</button>
+          <button onClick={() => go("method")}><span><BookOpen /></span>계산 방법</button>
         </div>
         <button className="disaster" onClick={() => go("disaster")}><strong>재해를 입었나요?</strong>
           <p>그대로 두기·되살리기·다시 심기·비워 두기를 견줘요</p></button>
@@ -201,6 +240,8 @@ export default function App() {
       <Chips label="논이에요, 밭이에요?" items={["논", "밭"] as FarmInput["land"][]} value={d.land} onChange={setLand} />
       <Chips label="물은 어떻게 대요?" items={["수혜구역", "관정", "없음"] as FarmInput["water"][]} value={d.water}
         onChange={v => set({ water: v })} show={v => WATER_LABEL[v]} hint="관정은 전기료가 비용에 들어가요." />
+      {d.water === "관정" && <Chips label="관정은 하루에 얼마나 대요?" items={["일반", "작은", "큰"] as FarmInput["pump"][]} value={d.pump}
+        onChange={v => set({ pump: v })} show={v => PUMP_LABEL[v]} hint="작은 관정은 가뭄 때 물이 모자라기 쉬워요 (기획안: 34년 중 23년)." />}
       {d.land === "논" && <Chips label="큰비 뒤 물은 잘 빠지나요?" items={["좋음", "보통", "나쁨"] as FarmInput["drainage"][]}
         value={d.drainage} onChange={v => set({ drainage: v })} show={v => DRAIN_LABEL[v]} />}
       <label className="field">지금(또는 올해 심으려던) 작물<select value={d.current} onChange={e => set({ current: e.target.value })}>
@@ -216,6 +257,21 @@ export default function App() {
       </div>
       <label className="field tight">다음 해 2월에 남겨야 할 돈 (만 원)<input type="number" min={0} step={50} value={d.need} onChange={e => set({ need: Number(e.target.value) })} />
         <small>5월부터 생활비를 쓰면서 어느 달에도 돈이 바닥나지 않고 이 금액이 남는지 계산해요.</small></label>
+      <h3>올해 조건 (2026년)</h3>
+      <small>계산 기준은 2024~2025년 값이에요. 올해 예상 값이나 직불금 자격이 다르면 넣어 주세요.</small>
+      <div className="row2">
+        <label className="field tight">{nameOf(d.current)} 판매수입 변화 (%)<input type="number" min={-50} max={100} step={1}
+          value={d.rev_pct[d.current] ?? 0} onChange={e => set({ rev_pct: { ...d.rev_pct, [d.current]: Number(e.target.value) } })} /></label>
+        <label className="field tight">다른 작물<select value={otherCrop} onChange={e => setOtherCrop(e.target.value)}>
+          {crops.filter(c => c.id !== d.current).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+      </div>
+      {crops.some(c => c.id === otherCrop && c.id !== d.current) && <label className="field tight">{nameOf(otherCrop)} 값 변화 (%)
+        <input type="number" min={-50} max={100} step={1} value={d.rev_pct[otherCrop] ?? 0}
+          onChange={e => set({ rev_pct: { ...d.rev_pct, [otherCrop]: Number(e.target.value) } })} /></label>}
+      {d.land === "논" && d.current !== "콩(논 재배)" && <label className="check">작년에 콩 직불금을 받지 않았어요<input type="checkbox"
+        checked={d.no_subsidy.includes("콩(논 재배)")}
+        onChange={e => set({ no_subsidy: e.target.checked ? ["콩(논 재배)"] : [] })} /></label>}
+      {d.land === "논" && d.current !== "콩(논 재배)" && <small>2026년부터 백태 전략작물직불금은 전년도 이행 농가만 받아요. 처음 바꾸는 농가라면 체크하세요.</small>}
       <details><summary>더 보기: 앞그루 · 판로 · 작부를 정하는 날</summary>
         <label className="field">앞그루<select value={d.prev} onChange={e => set({ prev: e.target.value as FarmInput["prev"], decision: "" })}>
           <option value="양파·마늘 거둔 뒤">양파·마늘 거둔 뒤 (6월 10일부터)</option><option value="없음">없음 (봄부터 심을 수 있음)</option></select></label>
@@ -268,6 +324,19 @@ export default function App() {
       </> : <>
         <label className="field tight">어떤 안의 달력을 볼까요?<select value={o.label} onChange={e => setCalLabel(e.target.value)}>
           {calc.options.map(x => <option key={x.label}>{x.label}</option>)}</select></label>
+        {(() => {
+          const cs = o.parts.map(p => p.crop);
+          const pc = cs.includes(input.pay_crop) ? input.pay_crop : cs[cs.length - 1];
+          const mode = input.pay_crop === pc ? input.pay_mode : "default";
+          return <div className="row2">
+            <label className="field tight">대금 받는 작물<select value={pc} disabled={busy}
+              onChange={e => run({ ...input, pay_crop: e.target.value, pay_mode: "default" }, true)}>
+              {cs.map(c => <option key={c} value={c}>{nameOf(c)}</option>)}</select></label>
+            <label className="field tight">대금 받는 방식<select value={mode} disabled={busy}
+              onChange={e => run({ ...input, pay_crop: pc, pay_mode: e.target.value as FarmInput["pay_mode"] }, true)}>
+              {(calc.pay_options[pc] ?? []).map(x => <option key={x.mode} value={x.mode}>{x.text}</option>)}</select></label>
+          </div>;
+        })()}
         <div className="info"><b>{o.trough_month}까지 최대 {won(-o.trough)}을 먼저 써요</b>
           <p>{o.first_pay_month ? `${o.first_pay_month}부터 판 돈이 들어와요. ` : ""}마이너스는 손해가 아니라, 판 돈이 들어오기 전에 비용을 먼저 쓴 만큼이에요.</p></div>
         <div className="months">{o.calendar.map(m => <div key={m.month}
@@ -278,6 +347,7 @@ export default function App() {
           <p>가진 돈 {won(input.money)} · 생활비 월 {won(input.living)}이면</p>
           <strong className="big">버티는 경우 {pct(o.survive)}</strong>
           <p>다음 해 2월에 {won(input.need)}을 남기려면 처음에 <b>{won(o.need90)}</b>이 있어야 해요 (90% 수준)</p>
+          <p>생활비를 빼고 작물에서 남는 돈만으로 2월에 {won(input.need)}을 못 모으는 경우 <b>{pct(o.crop_short)}</b></p>
         </div>
         <p className="muted">비용은 심는 달 40%·키우는 동안 30%·거두는 달 30%, 판 돈은 작물별 정산 시기(예: 벼 10~1월, 논콩 12~3월)에 들어온다고 봤어요.
           실제 정산 날짜에 따라 결과가 크게 바뀌므로 꼭 확인하세요.</p>
@@ -322,6 +392,12 @@ export default function App() {
         const ex = calc.excluded.filter(x => !/맞지 않음|다른 작기/.test(x.why));
         return ex.length > 0 && <p className="muted">이 조건에서 빠진 작물: {ex.map(x => `${x.crop}(${x.why})`).join(", ")}</p>;
       })()}
+      <div className="links">
+        <button className="button secondary" onClick={() => go("grid")}>땅마다 다른 답</button>
+        <button className="button secondary" onClick={() => go("climate")}>가뭄·큰비 위험</button>
+        {input.land === "논" && <button className="button secondary" onClick={() => go("drainage")}>배수 공사 값어치</button>}
+        <button className="button secondary" onClick={() => go("method")}>계산 방법·검증</button>
+      </div>
       <button className="button secondary" onClick={() => go("result")}>재배안 비교로 가기</button>
       {notice}
     </main>;
@@ -438,6 +514,131 @@ export default function App() {
     </main>;
   };
 
+  // ---------------------------------------------------------------- 땅마다 다른 답 (논 9가지)
+  const loading = (name: string) => extraBusy === name ? <p className="loading">34년 농사를 다시 짓는 중이에요…</p> : null;
+  const gridView = () => {
+    const g = extra.grid;
+    const waters: [string, string][] = [["수혜구역", "저수지 논"], ["관정", "관정 논"], ["없음", "빗물 논"]];
+    const drs = ["좋음", "보통", "나쁨"];
+    const cell = (w: string, dd: string) => g?.cells.find(x => x.water === w && x.drainage === dd);
+    return <main className="content">
+      <p className="muted">같은 {input.region}의 논이라도 물 대는 방법과 물 빠짐에 따라 답이 갈려요. 지금 벼를 심는 논, 일손 {input.labor} 기준이에요.
+        평균 소득 자료(직불금 포함)의 1위 작물과 수확계산기의 답을 나란히 봐요.</p>
+      {errBox(extraErr)}{loading("grid")}
+      {g && <>
+        <div className="grid9"><div />{drs.map(dd => <div key={dd} className="gh">물 빠짐 {dd}</div>)}
+          {waters.map(([w, wl]) => <Fragment key={w}><div className="gr">{wl}</div>{drs.map(dd => {
+            const c = cell(w, dd);
+            return c ? <div key={dd} className={`gc ${c.same ? "" : "diff"}`}><b>{c.answer}</b><small>소득 자료 1위 {c.stat_best}</small></div> : <div key={dd} />;
+          })}</Fragment>)}
+        </div>
+        <p className="muted">주황 칸 = 소득 자료 1위와 다른 답 ({g.cells.filter(c => !c.same).length}곳). 빗물 논은 물이 없어 벼를 못 심는 경우라 다른 작물만 견줘요.</p>
+        <table className="tbl"><thead><tr><th>땅</th><th>벼 평균 / 나쁜 해</th><th>논콩 평균 / 나쁜 해</th></tr></thead><tbody>
+          {g.cells.map(c => <tr key={c.water + c.drainage}><td>{waters.find(x => x[0] === c.water)?.[1]} · {c.drainage}</td>
+            <td>{c.rice_mean != null ? `${c.rice_mean} / ${c.rice_bad20}` : "못 심음"}</td>
+            <td>{c.soy_mean != null ? `${c.soy_mean} / ${c.soy_bad20}` : "-"}</td></tr>)}</tbody></table>
+        <p className="muted">만 원, {g.area_py.toLocaleString("ko-KR")}평 기준. 나쁜 해 = 가장 나쁜 20%의 평균.</p>
+        <div className="info"><b>누가 쓰나요</b><p>농업기술센터는 전환을 권할 논과 말릴 논을, 지자체는 지원금·배수 사업을 쓸 곳을 고를 수 있어요.</p></div>
+      </>}
+    </main>;
+  };
+
+  // ---------------------------------------------------------------- 가뭄·큰비 위험
+  const climateView = () => {
+    const c = extra.climate;
+    const h = c?.hedge;
+    const range = (xs: number[]) => { const a = Math.min(...xs), b = Math.max(...xs); return a === b ? `${a}` : `${a}~${b}`; };
+    return <main className="content">
+      {errBox(extraErr)}{loading("climate")}
+      {c && <>
+        {h && <>
+          <h3>가장 가물었던 {h.n}년과 비가 가장 많았던 {h.n}년</h3>
+          <label className="field tight">함께 견줄 작물<select value={climateAlt || h.alt} onChange={e => setClimateAlt(e.target.value)}>
+            {h.alts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+          <table className="tbl"><thead><tr><th>{c.area_py.toLocaleString("ko-KR")}평</th><th>가문 해</th><th>비 많은 해</th><th>{h.years}년 평균</th><th>흔들림</th><th>나쁜 해</th></tr></thead>
+            <tbody>{h.rows.map(r => <tr key={r.name}><td>{r.name}</td><td>{r.dry}</td><td>{r.wet}</td><td>{r.mean}</td><td>{r.std}</td><td>{r.bad20}</td></tr>)}</tbody></table>
+          <p className="muted">만 원. 해마다 손익(가격 5가지 평균) {h.years}개 기준. 흔들림 = 해마다 손익의 표준편차, 나쁜 해 = 가장 나쁜 20%의 평균.
+            가문 해 {h.dry_years.join("·")}, 비 많은 해 {h.wet_years.join("·")} ({c.current_name} 작기의 비 − 증발량 기준).</p>
+          <div className="info"><b>반반 섞으면</b><p>{h.years}년 평균은 비슷하면서 해마다 흔들리는 폭이 {range(h.std_cut.filter((x): x is number => x != null).map(x => Math.round(x * 100)))}% 줄고,
+            나쁜 해 평균이 {range(h.bad_gain)}만 원 높아져요. 몇 %를 섞을지는 땅의 물 사정과 가진 돈에 따라 달라 작물 추천에서 계산해요.</p></div>
+        </>}
+        <h3>큰비가 잦아지나요?</h3>
+        <div className="farm stat"><p>6~9월에 3일 100mm 넘는 비가 온 해 ({c.region})</p>
+          <strong className="big">{pct(c.trend.all)} → {pct(c.trend.recent)}</strong>
+          <p>{c.trend.all_years}년 전체 → 최근 {c.trend.recent_years}년</p>
+          {c.trend.cur_all != null && <p>{c.current_name} 그대로 평균 {won(c.trend.cur_all)} → 최근 15년 날씨만 {won(c.trend.cur_recent)}</p>}</div>
+        <h3>가뭄 위험은 어떤 땅에 몰리나요?</h3>
+        <p className="muted">{c.region}, 34년 중 물이 모자라 수확이 10% 넘게 준 해 (계산)</p>
+        <div className="bars">{c.drought.map(x => <div className="barrow" key={x.land}><span>{x.land}</span>
+          <div className="bartrack"><div className="barfill" style={{ width: `${(x.dry / Math.max(1, x.years)) * 100}%` }} /></div><b>{x.dry}년</b></div>)}</div>
+        <p className="muted">저수지가 바닥나는 깊은 가뭄(2022년)은 계산이 얕게 봐요. 물 댈 곳이 없는 땅부터 작물 바꾸기와 용수 지원을 먼저 보세요.</p>
+        {c.water && <><h3>물과 전기도 아껴요</h3>
+          <div className="farm stat"><p>관정으로 물을 대는 같은 논에서 {c.current_name} {c.water.cur_mm}mm → {c.water.alt_name} {c.water.alt_mm}mm</p>
+            <strong className="big">한 해 지하수 약 {c.water.tons.toLocaleString("ko-KR")}톤</strong>
+            <p>양수 전기 약 {c.water.kwh.toLocaleString("ko-KR")}kWh 절약 ({c.area_py.toLocaleString("ko-KR")}평, 1톤에 {c.water.kwh_per_m3}kWh 가정)</p></div></>}
+        <button className="button secondary" onClick={() => go("support")}>가뭄·큰비 지원 제도 보기</button>
+      </>}
+    </main>;
+  };
+
+  // ---------------------------------------------------------------- 배수 공사 값어치
+  const drainageView = () => {
+    if (input.land !== "논") return <main className="content"><p className="muted">배수 공사 계산은 논에서만 해요. 내 땅 알려주기에서 논을 골라 주세요.</p>
+      <button className="button" onClick={() => go("input")}>내 땅 알려주기</button></main>;
+    const x = extra.drainage;
+    return <main className="content">
+      <p className="muted">같은 논을 물 빠짐 '나쁨·보통·좋음'으로 바꿔 34년 × 가격 5가지를 다시 계산해, 물 빠짐을 고치면 한 해에 얼마나 나아지는지 봐요.
+        지금 물 빠짐: <b>{DRAIN_LABEL[input.drainage]}</b></p>
+      <div className="row2">
+        <label className="field tight">공사비 (만 원)<input type="number" min={0} step={50} placeholder={`${Math.round(650 * input.area_py / 3000)} (무굴착 암거)`}
+          value={drain.cost} onChange={e => setDrain({ ...drain, cost: e.target.value })} /></label>
+        <label className="field tight">지원받는 몫 (%)<input type="number" min={0} max={100} step={10} value={drain.support}
+          onChange={e => setDrain({ ...drain, support: e.target.value })} /></label>
+      </div>
+      <button className="button" disabled={extraBusy === "drainage"} onClick={() => setDrainApplied({ cost: drain.cost === "" ? null : Number(drain.cost), support: Number(drain.support) })}>
+        {extraBusy === "drainage" ? "계산하는 중…" : "다시 계산"}</button>
+      {errBox(extraErr)}{loading("drainage")}
+      {x && <>
+        <div className="stack">{x.levels.map(l => <article className={`plan ${l.level === x.now ? "highlight" : ""}`} key={l.level}>
+          <div className="plan-title"><h3>물 빠짐 {l.level}</h3>{l.level === x.now && <div className="tags"><span>지금</span></div>}</div>
+          <div className="plan-grid">
+            <div><small>{x.current_name} 그대로 평균</small><strong>{won(l.cur_mean)}</strong></div>
+            <div><small>나쁜 해 평균</small><strong>{won(l.cur_bad20)}</strong></div>
+            <div><small>한 해 늘어나는 돈</small><strong>{l.level === x.now || l.cur_gain == null ? "-" : signedWon(l.cur_gain)}</strong></div>
+            <div><small>공사비 되찾는 기간</small><strong>{l.level === x.now ? "-" : l.cur_payback != null ? `약 ${l.cur_payback}년` : "되찾지 못함"}</strong></div>
+          </div>
+          <p className="survive">균형 추천: {l.bal_label} · 평균 {won(l.bal_mean)}</p></article>)}</div>
+        <p className="muted">공사비 {won(x.cost)} 중 자부담 {won(x.own)}으로 계산했어요. 예시: 무굴착 암거배수 ha당 650만 원(국립식량과학원 시험 값), 지원금은 시군·사업마다 달라요.
+          한 해 5만 원(3,000평 기준)도 안 늘면 '되찾지 못함'으로 봐요.</p>
+      </>}
+    </main>;
+  };
+
+  // ---------------------------------------------------------------- 계산 방법·검증 (기획안 원문)
+  const methodView = () => <main className="content">
+    <p className="muted">기획안 '데이터 활용 전략'의 자료, 분석 방법, 검증 결과예요. 검증(분석 결과 5)과 지역 통계는 여러 해를 다시 돌린 분석 결과라 저장된 값을 보여 줘요.
+      나머지 화면의 숫자는 모두 이 앱이 그 자리에서 계산해요.</p>
+    <h3>어떤 데이터를 쓰나</h3>
+    <div className="stack">{DATA_SOURCES.map(s => <article className="support" key={s.name}><div className="plan-title"><h3>{s.name}</h3></div>
+      <p>{s.source}</p><p><b>쓴 항목</b> {s.used}</p><p><b>쓰는 곳</b> {s.where}</p></article>)}</div>
+    <h3>{REGION.title}</h3>
+    <table className="tbl"><tbody>{REGION.facts.map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}</tbody></table>
+    <p className="muted">{REGION.why}</p>
+    <h3>계산 순서와 공식</h3>
+    <div className="stack">{STEPS.map(s => <article className="support" key={s.title}><div className="plan-title"><h3>{s.title}</h3></div><p>{s.body}</p></article>)}</div>
+    <h3>분석 결과 5: 과거로 돌아가 채점했어요</h3>
+    <p className="muted">2015~2025년 각 해에 그전 자료만으로 답을 정하고, 그해 실제 날씨·가격으로 채점했어요.</p>
+    <table className="tbl"><thead><tr><th>땅 (지금 작물)</th><th>수확계산기의 답</th><th>지금 작물보다</th><th>소득 자료 1위보다</th></tr></thead>
+      <tbody>{BACKTEST.map(b => <tr key={b.land}><td>{b.land}</td><td>{b.answer}</td><td>{b.vsNow}</td><td>{b.vsStat}</td></tr>)}</tbody></table>
+    <p className="muted">{BACKTEST_NOTE}</p>
+    <div className="info"><b>정리하면</b><p>{BACKTEST_SUM}</p></div>
+    <h3>실제 기록과 견줬어요</h3>
+    <div className="stack">{CHECKS.map(c => <article className="support" key={c.name}><div className="plan-title"><h3>{c.name}</h3></div>
+      <p><b>무엇과</b> {c.against}</p><p><b>결과</b> {c.result}</p></article>)}</div>
+    <h3>남은 한계</h3>
+    <ul className="limits">{LIMITS.map(l => <li key={l}>{l}</li>)}</ul>
+  </main>;
+
   const back: Screen = screen === "result" || screen === "recommend" ? (screen === "recommend" ? "result" : "home") : "home";
   return <div className="app">
     {screen === "home" ? homeView() : <>
@@ -451,6 +652,10 @@ export default function App() {
       {screen === "support" && supportView()}
       {screen === "farm" && farmView()}
       {screen === "disaster" && disasterView()}
+      {screen === "grid" && gridView()}
+      {screen === "climate" && climateView()}
+      {screen === "drainage" && drainageView()}
+      {screen === "method" && methodView()}
     </>}
     {screen !== "input" && <nav className="bottom-nav" aria-label="주 메뉴">
       <button className={screen === "home" ? "active" : ""} onClick={() => go("home")}><Home /><span>홈</span></button>

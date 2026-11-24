@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -29,8 +30,74 @@ LEVEL = {"좋음", "보통", "나쁨"}
 LABOR = {"충분", "보통", "부족"}
 
 
+PUMP = {"일반": 10.0, "작은": 5.0, "큰": 15.0}  # 관정 하루 최대 급수(mm). 엔진 기본 10, 기획안 '작은 관정' 5
+PAY_MODES = {"default", "once", "late"}
+
+
 class InputError(ValueError):
     """화면에 그대로 보여 줄 수 있는 입력 오류."""
+
+
+@contextmanager
+def scenario(d: dict):
+    """화면에서 바꾼 조건(관정 크기·올해 값·입금 방식)을 엔진 가정에 잠깐 넣었다가 되돌린다.
+
+    - pump: 관정 하루 급수 '일반'(10mm)·'작은'(5mm)·'큰'(15mm)
+    - rev_pct: {작물: 판매수입 변화 %} — 올해 예상 값 (기획안 '앱에서 올해 예상 값을 넣고')
+    - pay_crop, pay_mode: 그 작물 대금을 기본 일정 / 첫 입금 달에 한 번에(once) / 절반은 3달 늦게(late)
+    요청은 http_util.LOCK 으로 한 번에 하나씩만 돌므로 전역 값을 바꿔도 다른 요청과 섞이지 않는다.
+    """
+    crops = E.crops()
+    saved = (E.ASSUME["pump_mm_per_day"], crops["총수입_천원"].copy(), dict(C.PAY_SCHEDULE))
+    try:
+        pump = d.get("pump", "일반")
+        if pump not in PUMP:
+            raise InputError("관정 크기를 다시 골라 주세요")
+        E.ASSUME["pump_mm_per_day"] = PUMP[pump]
+        names = set(crops["작물"])
+        for crop, pct in (d.get("rev_pct") or {}).items():
+            if crop not in names:
+                raise InputError(f"올해 값을 넣은 작물({crop})을 찾을 수 없어요")
+            pct = float(pct or 0)
+            if not -50 <= pct <= 100:
+                raise InputError("올해 값 변화는 −50%~+100% 사이로 넣어 주세요")
+            i = crops.index[crops["작물"] == crop][0]
+            crops.loc[i, "총수입_천원"] = float(saved[1].loc[i]) * (1 + pct / 100)
+        mode, pc = d.get("pay_mode", "default"), d.get("pay_crop")
+        if mode not in PAY_MODES:
+            raise InputError("대금 받는 방식을 다시 골라 주세요")
+        if pc and mode != "default":
+            if pc not in names:
+                raise InputError("대금 방식을 바꿀 작물을 다시 골라 주세요")
+            first = base_schedule(pc)[0][0]
+            C.PAY_SCHEDULE[pc] = {first: 1.0} if mode == "once" else {first: 0.5, (first + 2) % 12 + 1: 0.5}
+        yield
+    finally:
+        E.ASSUME["pump_mm_per_day"] = saved[0]
+        crops["총수입_천원"] = saved[1]
+        C.PAY_SCHEDULE.clear()
+        C.PAY_SCHEDULE.update(saved[2])
+
+
+BASE_PAY = {k: dict(v) for k, v in C.PAY_SCHEDULE.items()}  # 바꾸기 전 기본 입금 일정
+
+
+def base_schedule(crop: str) -> list[tuple[int, float]]:
+    if crop in BASE_PAY:
+        return list(BASE_PAY[crop].items())
+    row = E.crop_row(crop).copy()
+    row["작물"] = "__기본__"  # scenario 가 바꾼 PAY_SCHEDULE 를 건너뛰고 작물표의 입금 시기로 계산
+    return C.pay_schedule(row)
+
+
+def pay_options(crop: str) -> list[dict]:
+    """대금 받는 방식 선택지(달 표시)."""
+    sched = base_schedule(crop)
+    first = sched[0][0]
+    late = (first + 2) % 12 + 1
+    base = ", ".join(f"{m}월 {round(w * 100)}%" for m, w in sched)
+    return [dict(mode="default", text=f"기본: {base}"), dict(mode="once", text=f"{first}월에 한 번에"),
+            dict(mode="late", text=f"절반은 {first}월, 절반은 {late}월 (3달 늦게)")]
 
 
 # ---------------------------------------------------------------- 자금 (analysis/funds.py 와 같은 계산)
@@ -115,8 +182,13 @@ def field_from(d: dict):
     area_py = float(d.get("area_py", 3000))
     if not 100 <= area_py <= 100000:
         raise InputError("면적은 100~100,000평 사이로 넣어 주세요")
+    # 직불금 자격이 없는 작물(예: 2026년부터 백태는 전년도 이행 농가만) → 그 작물 직불금을 뺀다
+    sub = {}
+    for c in d.get("no_subsidy") or []:
+        if c in set(E.crops()["작물"]) and c != current:
+            sub[c] = -float(E.crop_row(c)["직불_천원"])
     return E.Field(region=region, land=land, water=water, drainage=drainage, current=current,
-                   free_from=PREV[prev], labor=labor, sales=sales, area_10a=area_py / 300)
+                   free_from=PREV[prev], labor=labor, sales=sales, area_10a=area_py / 300, local_subsidy=sub)
 
 
 def decision_of(d: dict, f) -> str:
@@ -279,12 +351,15 @@ def calc(d: dict) -> dict:
     return dict(
         input=dict(region=f.region, land=f.land, water=f.water, drainage=f.drainage, current=f.current,
                    current_name=nm(f.current), labor=f.labor, area_py=round(f.area_10a * 300), decision=decision,
-                   money=money, living=living, need=need, recent=bool(excl)),
+                   money=money, living=living, need=need, recent=bool(excl), pump=d.get("pump", "일반"),
+                   rev_pct=d.get("rev_pct") or {}, no_subsidy=sorted(f.local_subsidy), pay_crop=d.get("pay_crop"),
+                   pay_mode=d.get("pay_mode", "default")),
         state=dict(reservoir_rate=st.get("reservoir_rate"), reservoir_source=st.get("reservoir_source", "계산"),
                    state=st.get("state")),
         reservoir_obs=f.region in OBS_RESERVOIR,
         current=cur, balanced=bal, best_mean=best_mean, best_safe=best_safe, best_easy=best_easy,
         options=ranked, climate=climate, breakeven=breakeven,
+        pay_options={c: pay_options(c) for c in r["results"]},
         excluded=[dict(crop=nm(x["작물"]), why=x["이유"]) for _, x in r["excluded"].iterrows()] if len(r["excluded"]) else [],
         cases=int(len(r["analog_years"]) * len(E.ASSUME["price_z"])), years=[int(y) for y in r["analog_years"]])
 
@@ -395,4 +470,196 @@ def disaster(d: dict) -> dict:
                 next_year=[nm(c) for c in r["next_year"]], area_py=round(f.area_10a * 300))
 
 
-ROUTES = {"meta": meta, "calc": calc, "flips": flips, "farm": farm, "disaster": disaster}
+# ---------------------------------------------------------------- 배수 공사의 값어치 (analysis/drainage.py 와 같은 계산)
+def drainage(d: dict) -> dict:
+    f = field_from(d)
+    if f.land != "논":
+        raise InputError("배수 공사 계산은 논에서만 해요")
+    decision = decision_of(d, f)
+    excl = excl_of(d)
+    k = f.area_10a / 10
+    cost = float(d["cost"]) if d.get("cost") is not None else 650.0 * k  # 무굴착 암거 ha당 650만 원(연구 시험 값)
+    support = float(d.get("support", 0) or 0) / 100
+    own = cost * (1 - support)
+    rows = []
+    for lv in ("나쁨", "보통", "좋음"):
+        g = replace(f, drainage=lv)
+        r = E.compare(g, YEAR, decision, excl)
+        row = dict(level=lv)
+        if f.current in r["results"]:
+            _, mean, bad = E.score(r["results"][f.current][2])
+            row.update(cur_mean=r0(mean * k), cur_bad20=r0(bad * k))
+        p = r["plan"]
+        pp = p if (p["share"] > 0 or f.current in r["results"]) else dict(plan="", alt=p["alt"], share=1.0)
+        row.update(bal_label=label_of(g, pp), bal_mean=r0(p["mean"] * k), bal_bad20=r0(p["bad"] * k))
+        rows.append(row)
+    base = next(x for x in rows if x["level"] == f.drainage)
+    for x in rows:
+        for key in ("cur", "bal"):
+            if f"{key}_mean" in x and f"{key}_mean" in base:
+                gain = x[f"{key}_mean"] - base[f"{key}_mean"]
+                x[f"{key}_gain"] = r0(gain)
+                # 한 해 5만 원(3,000평 기준)도 안 늘면 '되찾지 못함' (drainage.payback 과 같은 기준)
+                x[f"{key}_payback"] = None if gain < 5 * k else round(own / gain, 1)
+    return dict(levels=rows, now=f.drainage, cost=r0(cost), own=r0(own), support=support, current_name=nm(f.current),
+                area_py=round(f.area_10a * 300))
+
+
+# ---------------------------------------------------------------- 기후 위기 (analysis/climate_reco.py, recent_climate.py 와 같은 계산)
+def _by_year(res, crop):
+    _, sims, pr = res[crop]
+    return {s["analog"]: (float(pr[i].mean()), float(s["season_wb"])) for i, s in enumerate(sims)}
+
+
+def _yearly_stats(v: np.ndarray, k: float) -> dict:
+    """해마다 손익(가격 5가지 평균) 34개로 본 평균·흔들림·나쁜 20%(기획안 결과 3 기준)."""
+    s = np.sort(v)
+    n = max(1, round(len(s) * 0.2))
+    return dict(mean=r0(s.mean() * k), std=r0(s.std(ddof=1) * k),  # 표본 표준편차 (기획안 표와 같음)
+                bad20=r0(s[:n].mean() * k), worst=r0(s[0] * k),
+                loss_years=int((s < 0).sum()))
+
+
+def climate(d: dict) -> dict:
+    f = field_from(d)
+    decision = decision_of(d, f)
+    excl = excl_of(d)
+    k = f.area_10a / 10
+    r = E.compare(f, YEAR, decision, excl)
+    res = r["results"]
+    out = dict(region=f.region, current_name=nm(f.current), area_py=round(f.area_10a * 300))
+
+    # 1) 가장 가물었던 20%·비가 가장 많았던 20% 해의 손익: 지금 작물만 / 대안만 / 반반
+    alt = d.get("alt")
+    if not alt or alt not in res or alt == f.current:
+        p = r["plan"]
+        alt = p["alt"] if p["alt"] != f.current and p["alt"] in res else None
+        if alt is None:
+            others = [(c, E.score(v[2])[0]) for c, v in res.items() if c != f.current]
+            alt = max(others, key=lambda x: x[1])[0] if others else None
+    if f.current in res and alt:
+        a, b = _by_year(res, f.current), _by_year(res, alt)
+        years = sorted(set(a) & set(b), key=lambda y: a[y][1])  # 지금 작물 작기의 물수지(비 − 증발) 순
+        n = max(1, round(len(years) * 0.2))
+        dry, wet = years[:n], years[-n:]
+        plans = [(f"{nm(f.current)}만", lambda y: a[y][0]), (f"{nm(alt)}만", lambda y: b[y][0]),
+                 ("반반 섞기", lambda y: 0.5 * a[y][0] + 0.5 * b[y][0])]
+        rows = []
+        for name, fn in plans:
+            v = np.array([fn(y) for y in years])
+            rows.append(dict(name=name, dry=r0(np.mean([fn(y) for y in dry]) * k), wet=r0(np.mean([fn(y) for y in wet]) * k),
+                             **_yearly_stats(v, k)))
+        mix = rows[2]
+        out["hedge"] = dict(alt=alt, alt_name=nm(alt), rows=rows, dry_years=sorted(dry), wet_years=sorted(wet), n=n,
+                            years=len(years),
+                            std_cut=[round(1 - mix["std"] / x["std"], 3) if x["std"] else None for x in rows[:2]],
+                            bad_gain=[r0(mix["bad20"] - x["bad20"]) for x in rows[:2]],
+                            alts=[dict(id=c, name=nm(c)) for c in res if c != f.current])
+
+    # 2) 큰비가 잦아지나: 작기(6~9월)에 3일 100mm 넘는 비가 온 해의 비율, 34년 전체 vs 최근 15년
+    W = E.weather(f.region)
+
+    def big_share(y0):
+        ys = [y for y in range(y0, 2026) if y in W]
+        hit = [bool((np.convolve(np.nan_to_num(W[y][0][151:273]), np.ones(3), "valid") >= E.ASSUME["wet_rain_3d"]).any()) for y in ys]
+        return float(np.mean(hit)), len(ys)
+
+    all_s, all_n = big_share(1992)
+    rec_s, rec_n = big_share(2011)
+    trend = dict(all=all_s, all_years=all_n, recent=rec_s, recent_years=rec_n)
+    if f.current in res:
+        r15 = E.compare(f, YEAR, decision, set(range(1992, 2011)))
+        if f.current in r15["results"]:
+            trend.update(cur_all=r0(E.score(res[f.current][2])[1] * k), cur_recent=r0(E.score(r15["results"][f.current][2])[1] * k))
+    out["trend"] = trend
+
+    # 3) 가뭄 위험은 어떤 땅에 몰리나: 같은 지역, 땅마다 34년 중 물이 모자라 수확이 10% 넘게 준 해
+    lands = [("저수지 논 (벼)", dict(land="논", water="수혜구역", current="벼"), "일반"),
+             ("관정 논 (벼)", dict(land="논", water="관정", current="벼"), "일반"),
+             ("작은 관정 논 (벼, 하루 5mm)", dict(land="논", water="관정", current="벼"), "작은"),
+             ("빗물 논 (논콩)", dict(land="논", water="없음", current="콩(논 재배)"), "일반"),
+             ("물 없는 밭 (참깨)", dict(land="밭", water="없음", current="참깨"), "일반")]
+    saved_pump = E.ASSUME["pump_mm_per_day"]
+    drought = []
+    try:
+        for label, kw, pump in lands:
+            E.ASSUME["pump_mm_per_day"] = PUMP[pump]
+            g = E.Field(region=f.region, drainage="보통" if kw["land"] == "논" else "좋음", labor=f.labor, sales=f.sales,
+                        free_from="06-10" if kw["land"] == "논" else "01-01", **kw)
+            try:
+                rr = E.compare(g, YEAR, "06-01" if kw["land"] == "논" else "04-01", excl)
+            except ValueError:
+                continue
+            if g.current in rr["results"]:
+                sims = rr["results"][g.current][1]
+                drought.append(dict(land=label, dry=sum(1 for s in sims if s["water_ratio"] < 0.9), years=len(sims)))
+    finally:
+        E.ASSUME["pump_mm_per_day"] = saved_pump
+    out["drought"] = drought
+
+    # 4) 물과 전기: 관정으로 물을 대는 같은 땅에서 지금 작물 vs 대안 작물의 한 해 양수량
+    if f.land == "논" and alt:
+        g = replace(f, water="관정")
+        try:
+            rw = E.compare(g, YEAR, decision, excl)["results"]
+        except ValueError:
+            rw = {}
+        if f.current in rw and alt in rw:
+            mm_cur = float(np.mean([s["irrigation_mm"] for s in rw[f.current][1]]))
+            mm_alt = float(np.mean([s["irrigation_mm"] for s in rw[alt][1]]))
+            tons = (mm_cur - mm_alt) * f.area_10a  # 1mm × 10a = 1m³
+            out["water"] = dict(cur_mm=r0(mm_cur), alt_mm=r0(mm_alt), tons=r0(tons), kwh=r0(tons * E.ASSUME["kwh_per_m3"]),
+                                kwh_per_m3=E.ASSUME["kwh_per_m3"], alt_name=nm(alt))
+    return out
+
+
+# ---------------------------------------------------------------- 땅마다 다른 답: 논 9가지 (analysis/screening.py 와 같은 계산)
+def static_best(f, decision: str) -> str:
+    """직불금을 더한 평균 소득 자료 1위 (analysis/validate.static_best 와 같음)."""
+    best, val = None, -1e9
+    for _, row in E.crops().iterrows():
+        s, _ = E.plan_season(row, f, E.doy(decision))
+        if s is None:
+            continue
+        v = row["소득_천원"] + (row["직불_천원"] if f.land == "논" else 0) \
+            - row["자가노동_h"] * E.ASSUME["labor_hire_share"][f.labor] * E.ASSUME["wage"]
+        if v > val:
+            best, val = row["작물"], v
+    return best
+
+
+def grid(d: dict) -> dict:
+    base = field_from({**d, "land": "논", "current": "벼"})
+    decision = decision_of(d, base)
+    excl = excl_of(d)
+    k = base.area_10a / 10
+    cells = []
+    for w in ("수혜구역", "관정", "없음"):
+        for dr in ("좋음", "보통", "나쁨"):
+            f = replace(base, water=w, drainage=dr)
+            c = E.compare(f, YEAR, decision, excl)
+            p = c["plan"]
+            if f.current in c["results"]:
+                ans = label_of(f, p)
+            else:
+                ans = nm(p["alt"])
+            sb = static_best(f, decision)
+            cell = dict(water=w, drainage=dr, answer=ans, rice_ok=f.current in c["results"],
+                        alt=nm(p["alt"]), share=p["share"], stat_best=nm(sb), same=p["alt"] == sb)
+            for crop, key in (("벼", "rice"), ("콩(논 재배)", "soy")):
+                if crop in c["results"]:
+                    _, mean, bad = E.score(c["results"][crop][2])
+                    cell[f"{key}_mean"], cell[f"{key}_bad20"] = r0(mean * k), r0(bad * k)
+            cells.append(cell)
+    return dict(region=base.region, cells=cells, area_py=round(base.area_10a * 300))
+
+
+def _wrap(fn):
+    def run(d: dict) -> dict:
+        with scenario(d):
+            return fn(d)
+    return run
+
+
+ROUTES = {"meta": meta, **{n: _wrap(fn) for n, fn in dict(calc=calc, flips=flips, farm=farm, disaster=disaster,
+                                                           drainage=drainage, climate=climate, grid=grid).items()}}

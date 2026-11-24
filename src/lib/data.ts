@@ -5,6 +5,7 @@ export const DEFAULT_INPUT: FarmInput = {
   region: "합천", land: "논", water: "수혜구역", drainage: "보통", current: "벼", labor: "보통",
   area_py: 3000, prev: "양파·마늘 거둔 뒤", sales: "공판장까지", decision: "",
   money: 1000, living: 100, need: 200, recent: false,
+  pump: "일반", rev_pct: {}, no_subsidy: [], pay_crop: "", pay_mode: "default",
 };
 
 // 예시 농가 (분석의 대표 땅 6가지와 같음)

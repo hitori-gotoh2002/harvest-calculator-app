@@ -121,9 +121,11 @@ def pay_options(crop: str) -> list[dict]:
     sched = base_schedule(crop)
     first = sched[0][0]
     late = (first + 2) % 12 + 1
-    base = ", ".join(f"{m}월 {round(w * 100)}%" for m, w in sched)
+    ws = {round(w * 100) for _, w in sched}
+    base = (f"{'·'.join(str(m) for m, _ in sched)}월 각 {ws.pop()}%" if len(ws) == 1 and len(sched) > 1
+            else f"{'·'.join(str(m) for m, _ in sched)}월 {'·'.join(str(round(w * 100)) for _, w in sched)}%")  # 화면 칸에 들어가게 짧게
     return [dict(mode="default", text=f"기본: {base}"), dict(mode="once", text=f"{first}월에 한 번에"),
-            dict(mode="late", text=f"절반은 {first}월, 절반은 {late}월 (3달 늦게)")]
+            dict(mode="late", text=f"반은 {first}월, 반은 {late}월 (3달 늦게)")]
 
 
 # ---------------------------------------------------------------- 자금 (analysis/funds.py 와 같은 계산)

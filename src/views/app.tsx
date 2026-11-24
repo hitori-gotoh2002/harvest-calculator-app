@@ -9,6 +9,15 @@ import { BACKTEST, BACKTEST_NOTE, BACKTEST_SUM, CHECKS, DATA_SOURCES, LIMITS, RE
 
 type Screen = "home" | "input" | "result" | "recommend" | "support" | "farm" | "disaster" | "grid" | "climate" | "drainage" | "method";
 const STORE = "harvest-calculator-input-v2";
+type Tab = "plans" | "calendar";
+type Hist = { screen?: Screen; tab?: Tab; fromPlans?: boolean; y?: number }; // 브라우저 기록에 남기는 것
+// Next.js 는 기록에 자기 표시(__NA)가 없으면 뒤로 갈 때 페이지 전체를 새로고침한다 → 우리 기록에도 그 표시를 옮겨 담는다
+const withNext = (d: Hist) => {
+  const cur = (window.history.state ?? {}) as Record<string, unknown>;
+  const keep: Record<string, unknown> = {};
+  for (const k of ["__NA", "__PRIVATE_NEXTJS_INTERNALS_TREE"]) if (cur[k] !== undefined) keep[k] = cur[k];
+  return { ...keep, ...d };
+};
 const TITLE: Record<Screen, string> = {
   home: "", input: "내 땅 알려주기", result: "손익 시뮬레이션", recommend: "작물 추천",
   support: "지원 제도", farm: "내 농장 다시 계산", disaster: "재해 뒤 비교",
@@ -97,7 +106,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [flips, setFlips] = useState<Flips | null>(null);
   const [flipsErr, setFlipsErr] = useState("");
-  const [tab, setTab] = useState<"plans" | "calendar">("plans");
+  const [tab, setTab] = useState<Tab>("plans");
   const [calLabel, setCalLabel] = useState("");
   const [farm, setFarm] = useState<Farm | null>(null);       // '내 농장 다시 계산' 화면 (지난 해 연습 포함)
   const [homeFarm, setHomeFarm] = useState<Farm | null>(null); // 홈 카드: 언제나 올해 · 균형 추천
@@ -137,11 +146,26 @@ export default function App() {
     } finally { setExtraBusy(""); }
   }, []);
 
-  // 화면 이동을 브라우저 기록에 남겨, 폰의 뒤로 가기가 앱 안에서 이전 화면으로 가게 한다
-  const go = (s: Screen) => {
-    if (s !== screen) window.history.pushState({ screen: s }, "", s === "home" ? window.location.pathname : `#${s}`);
+  // 화면 이동을 브라우저 기록에 남겨, 폰의 뒤로 가기가 앱 안에서 이전 화면으로 가게 한다.
+  // 시뮬레이션의 탭(재배안 비교/돈 흐름 달력)과 떠날 때 보던 자리(y)도 기록해, 뒤로 오면 그 자리로 돌아온다.
+  const go = (s: Screen, t?: Tab) => {
+    const cur = (window.history.state ?? {}) as Hist;
+    const nextTab = t ?? (s === "result" ? "plans" : tab);
+    if (s !== screen || (s === "result" && nextTab !== tab)) {
+      window.history.replaceState({ ...cur, y: window.scrollY }, "");
+      const fromPlans = screen === "result" && tab === "plans" && s === "result";
+      window.history.pushState(withNext({ screen: s, tab: nextTab, fromPlans }), "", s === "home" ? window.location.pathname : `#${s}`);
+    }
+    setTab(nextTab);
     setScreen(s);
     window.scrollTo({ top: 0 });
+  };
+  // 달력에서 '재배안 비교' 탭: 목록에서 온 달력이면 뒤로(보던 자리로), 아니면 그 자리에서 바꿈
+  const showPlans = () => {
+    const st = (window.history.state ?? {}) as Hist;
+    if (st.screen === "result" && st.tab === "calendar" && st.fromPlans) { window.history.back(); return; }
+    window.history.replaceState({ ...st, tab: "plans" }, "");
+    setTab("plans");
   };
   const goBack = () => {
     const st = window.history.state as { screen?: Screen } | null;
@@ -150,16 +174,20 @@ export default function App() {
   };
   useEffect(() => {
     const h = window.location.hash.slice(1) as Screen;
-    window.history.replaceState({ screen: "home" }, "", window.location.pathname);
+    window.history.scrollRestoration = "manual"; // 보던 자리는 앱이 기록해서 되돌린다
+    window.history.replaceState(withNext({ screen: "home" }), "", window.location.pathname);
     if (h && h in TITLE && h !== "home") {
-      window.history.pushState({ screen: h }, "", `#${h}`);
+      window.history.pushState(withNext({ screen: h, tab: "plans" }), "", `#${h}`);
       setScreen(h);
     }
     const onPop = (e: PopStateEvent) => {
       // 주소의 #화면 만 바뀐 경우(같은 탭에서 공유 링크 열기 등)에는 기록에 화면이 없으므로 주소를 따른다
       const h = window.location.hash.slice(1) as Screen;
-      setScreen(((e.state as { screen?: Screen } | null)?.screen) ?? (h && h in TITLE ? h : "home"));
-      window.scrollTo({ top: 0 });
+      const st = (e.state ?? {}) as Hist;
+      setScreen(st.screen ?? (h && h in TITLE ? h : "home"));
+      setTab(st.tab ?? "plans");
+      const y = st.y ?? 0; // 그 화면을 떠날 때 보던 자리 (그린 다음에 옮긴다)
+      setTimeout(() => window.scrollTo({ top: y }), 30);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -253,8 +281,8 @@ export default function App() {
 
   // ---------------------------------------------------------------- 공통 조각
   const N = calc?.years.length ?? 34; // 계산에 쓴 날씨 해 수 (최근 20년만 켜면 20)
-  const openCalendar = (label: string) => { setCalLabel(label); setTab("calendar"); go("result"); };
-  const openPlans = () => { setTab("plans"); go("result"); };
+  const openCalendar = (label: string) => { setCalLabel(label); go("result", "calendar"); };
+  const openPlans = () => go("result", "plans");
   // 요약 카드: 누르면 자세한 화면으로
   const summary = calc && <div className="summary-grid">
     <button className="summary-card" onClick={openPlans}><span>지금 작물({calc.input.current_name}) 보통 해</span><strong>{cur ? won(cur.mid) : "심기 어려움"}</strong></button>
@@ -370,7 +398,7 @@ export default function App() {
       const rev = Object.fromEntries(Object.entries(d.rev_pct).filter(([c, v]) => ids.has(c) && v));
       const clean = { ...d, rev_pct: rev, no_subsidy: d.land === "논" ? d.no_subsidy : [], pay_crop: ids.has(d.pay_crop) ? d.pay_crop : "",
         pay_mode: ids.has(d.pay_crop) ? d.pay_mode : "default" as FarmInput["pay_mode"] };
-      if (await run(clean, false, true)) { setTab("plans"); go("result"); }
+      if (await run(clean, false, true)) go("result", "plans");
     };
     return <main className="content">
       {changed && <p className="notice small">바꾼 내용은 아래 <b>다시 지어 보기</b>를 눌러야 결과에 반영돼요.</p>}
@@ -440,7 +468,7 @@ export default function App() {
   // ---------------------------------------------------------------- 손익 시뮬레이션
   const planCard = (o: Option) => {
     const tags = tagsOf(o);
-    const openIt = () => { setCalLabel(o.label); setTab("calendar"); window.scrollTo({ top: 0 }); };
+    const openIt = () => { setCalLabel(o.label); go("result", "calendar"); };
     return <article className={`plan tap ${o.label === calc?.balanced.label ? "highlight" : ""}`} key={o.label} role="button" tabIndex={0}
       aria-label={`${o.label} 돈 흐름 보기`} onClick={openIt} onKeyDown={e => { if (e.key === "Enter") openIt(); }}>
       <div className="plan-title"><h3>{o.label}</h3><div className="tags">{tags.map(t => <span key={t}>{t}</span>)}</div></div>
@@ -466,8 +494,8 @@ export default function App() {
       {staleError}
       {summary}
       {conds}
-      <div className="tabs"><button className={tab === "plans" ? "on" : ""} onClick={() => setTab("plans")}>재배안 비교</button>
-        <button className={tab === "calendar" ? "on" : ""} onClick={() => setTab("calendar")}>돈 흐름 달력</button></div>
+      <div className="tabs"><button className={tab === "plans" ? "on" : ""} onClick={() => { if (tab !== "plans") showPlans(); }}>재배안 비교</button>
+        <button className={tab === "calendar" ? "on" : ""} onClick={() => go("result", "calendar")}>돈 흐름 달력</button></div>
       {tab === "plans" ? <>
         <p className="muted">지난 {N}년 날씨 × 가격 5가지 = {calc.cases}가지 경우로 계산했어요. 나쁜 해 = 가장 나쁜 20%의 평균.
           필요한 시작 자금 = 생활비 월 {won(input.living)}을 쓰며 다음 해 2월에 {won(input.need)}이 남도록 처음 가져야 할 돈({calc.cases}가지 중 90% 수준).</p>
@@ -483,7 +511,7 @@ export default function App() {
           const cs = o.parts.map(p => p.crop);
           const pc = cs.includes(input.pay_crop) ? input.pay_crop : cs[cs.length - 1];
           const mode = input.pay_crop === pc ? input.pay_mode : "default";
-          return <div className="row2">
+          return <div>
             <label className="field tight">대금 받는 작물<select value={pc} disabled={busy}
               onChange={e => run({ ...input, pay_crop: e.target.value, pay_mode: "default" }, true)}>
               {cs.map(c => <option key={c} value={c}>{nameOf(c)}</option>)}</select></label>

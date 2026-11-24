@@ -83,3 +83,8 @@ python -m unittest discover -s tests -v    # 1분쯤, numpy·pandas 필요
 - 작물 소득·비용: 농촌진흥청 농산물소득자료집 2024·2025, 농사로 소득자료
 - 그해 가격·수확: 국가데이터처 생산비조사·농작물생산조사
 - 지원 제도: 각 링크의 2026년 안내 (지역·연도마다 다름)
+
+## 그림과 글꼴
+
+- `public/figma/*.webp`: 팀 디자인 사이트(harvest-calculator.vercel.app/figma/)의 그림 5개를 화면 크기에 맞게 줄인 것(계산기·새싹·일지 아이콘, 계산기·벼 일러스트). 정부 상징과 'AI' 문구가 든 배너는 쓰지 않았다.
+- 글꼴: Pretendard(cdn.jsdelivr.net), 없으면 Noto Sans KR.

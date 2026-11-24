@@ -1,6 +1,6 @@
 "use client";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { Home, Sprout, Calculator, ShieldCheck, ChevronLeft, MapPin, Bell, RefreshCw, Star, Tractor, ExternalLink,
+import { Home, Sprout, Calculator, ShieldCheck, ChevronLeft, MapPin, Bell, Star, Tractor, ExternalLink,
   LayoutGrid, CloudRain, Shovel, BookOpen } from "lucide-react";
 import { post, won, signedWon, pct, mmdd } from "../lib/api";
 import type { Calc, ClimateOut, DisasterOut, DrainageOut, Farm, FarmInput, Flips, GridOut, Meta, Option } from "../lib/api";
@@ -53,18 +53,35 @@ function Chips<T extends string>({ label, items, value, onChange, show, hint }:
 
 function PathChart({ farm }: { farm: Farm }) {
   const p = farm.path;
+  const [hover, setHover] = useState<number | null>(null);
   if (p.length < 2) return null;
   const W = 350, H = 150, L = 8, R = 8, T = 14, B = 22;
   const lo = Math.min(...p.map(x => x.lo10)), hi = Math.max(...p.map(x => x.hi90));
   const X = (i: number) => L + (i * (W - L - R)) / (p.length - 1);
   const Y = (v: number) => T + ((hi - v) * (H - T - B)) / Math.max(1, hi - lo);
   const band = p.map((x, i) => `${X(i)},${Y(x.hi90)}`).concat(p.map((x, i) => `${X(p.length - 1 - i)},${Y(p[p.length - 1 - i].lo10)}`)).join(" ");
-  return <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="날짜별 예상 손익 변화">
-    <polygon points={band} fill="#dcf1d8" />
-    <polyline points={p.map((x, i) => `${X(i)},${Y(x.mid)}`).join(" ")} fill="none" stroke="#1e7a3c" strokeWidth="3" />
-    {p.map((x, i) => <circle key={x.date} cx={X(i)} cy={Y(x.mid)} r="3.5" fill="#1e7a3c" />)}
+  const last = p[p.length - 1], ly = Y(last.mid);
+  const pick = (ev: React.PointerEvent<SVGSVGElement>) => {
+    const r = ev.currentTarget.getBoundingClientRect();
+    const x = ((ev.clientX - r.left) / r.width) * W;
+    setHover(Math.max(0, Math.min(p.length - 1, Math.round(((x - L) / (W - L - R)) * (p.length - 1)))));
+  };
+  const h = hover == null ? null : p[hover];
+  const tipW = 150, tipX = h ? Math.max(L, Math.min(W - R - tipW, X(hover!) - tipW / 2)) : 0;
+  return <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="날짜별 예상 손익 변화 (누르면 그날 값)"
+    onPointerMove={pick} onPointerDown={pick} onPointerLeave={() => setHover(null)} style={{ touchAction: "pan-y" }}>
+    <polygon points={band} fill="#ddf4db" />
+    <polyline points={p.map((x, i) => `${X(i)},${Y(x.mid)}`).join(" ")} fill="none" stroke="#2c583b" strokeWidth="2" strokeLinejoin="round" />
+    {p.map((x, i) => <circle key={x.date} cx={X(i)} cy={Y(x.mid)} r="4" fill="#2c583b" stroke="#fff" strokeWidth="2" />)}
+    {hover == null && <text x={W - R} y={ly < 30 ? ly + 18 : ly - 10} fontSize="12" fontWeight="700" fill="#17211a" textAnchor="end">{won(last.mid)}</text>}
     <text x={L} y={H - 6} fontSize="11" fill="#59665d">{mmdd(p[0].date)}</text>
-    <text x={W - R} y={H - 6} fontSize="11" fill="#59665d" textAnchor="end">{mmdd(p[p.length - 1].date)}</text>
+    <text x={W - R} y={H - 6} fontSize="11" fill="#59665d" textAnchor="end">{mmdd(last.date)}</text>
+    {h && <g pointerEvents="none">
+      <line x1={X(hover!)} x2={X(hover!)} y1={T - 6} y2={H - B} stroke="#8a958d" strokeWidth="1" strokeDasharray="3 3" />
+      <rect x={tipX} y={0} width={tipW} height={34} rx="8" fill="#fff" stroke="#d8e0d9" />
+      <text x={tipX + 8} y={14} fontSize="11" fill="#59665d">{mmdd(h.date)} 다시 계산</text>
+      <text x={tipX + 8} y={28} fontSize="12" fontWeight="700" fill="#17211a">보통 {won(h.mid)}</text>
+    </g>}
   </svg>;
 }
 
@@ -241,12 +258,14 @@ export default function App() {
   // 요약 카드: 누르면 자세한 화면으로
   const summary = calc && <div className="summary-grid">
     <button className="summary-card" onClick={openPlans}><span>지금 작물({calc.input.current_name}) 보통 해</span><strong>{cur ? won(cur.mid) : "심기 어려움"}</strong></button>
-    <button className="summary-card" onClick={openPlans}><span>나쁜 해 평균 (가장 나쁜 20%)</span><strong>{cur ? won(cur.bad20) : "-"}</strong></button>
+    <button className="summary-card" onClick={openPlans}><span>나쁜 해 평균</span><strong>{cur ? won(cur.bad20) : "-"}</strong></button>
     <button className="summary-card" onClick={() => cur ? openCalendar(cur.label) : openPlans()}><span>돈이 가장 모자라는 달</span><strong>{cur ? `${cur.trough_month} ${signedWon(cur.trough)}` : "-"}</strong></button>
-    <button className="summary-card warm" onClick={() => go("recommend")}><span>수확계산기 추천 (균형)</span><strong>{calc.balanced.label}</strong></button>
+    <button className="summary-card warm" onClick={() => go("recommend")}><span>균형 추천</span><strong>{calc.balanced.label}</strong></button>
   </div>;
-  const notice = <p className="notice">지난 {N}년 날씨와 그해 가격으로 이 땅의 농사를 다시 지어 본 계산 범위예요. 날씨를 예측하지 않아요.
-    금액은 2024~2025년 소득 자료 기준이고, 시범 농가 장부로 맞춰 보기 전 단계예요.</p>;
+  const notice = <section className="notice"><b>꼭 확인해 주세요</b><ul>
+    <li>지난 {N}년 날씨와 그해 가격으로 이 땅의 농사를 다시 지어 본 계산 범위예요. 날씨를 예측하지 않아요.</li>
+    <li>나쁜 해 평균은 손익이 가장 낮은 20%의 평균이에요. 가장 큰 손실을 뜻하지 않아요.</li>
+    <li>금액은 2024~2025년 소득 자료 기준이고, 시범 농가 장부로 맞춰 보기 전 단계예요.</li></ul></section>;
   const errBox = (m: string | undefined, retry?: () => void) => m ? <div className="error" role="alert"><span>{m}</span>
     {retry && <button className="link" onClick={retry}>다시 시도</button>}</div> : null;
   // 기본값과 다르게 적용 중인 조건 (다른 화면에서도 보이게)
@@ -293,14 +312,16 @@ export default function App() {
             : clim.dry > 0 ? `가뭄 대비가 먼저예요: ${clim.years}년 중 ${clim.dry}년 물 부족` : `${clim.years}년 동안 가뭄·큰비 피해가 드문 땅이에요`}</button>}
         <h2>무엇을 볼까요?</h2>
         <div className="shortcuts">
-          <button onClick={() => go("input")}><span><Calculator /></span>손익 계산</button>
-          <button onClick={() => go("recommend")}><span><Sprout /></span>작물 추천</button>
-          <button onClick={() => go("support")}><span><ShieldCheck /></span>지원 제도</button>
-          <button onClick={() => go("farm")}><span><RefreshCw /></span>다시 계산</button>
-          <button onClick={() => go("grid")}><span><LayoutGrid /></span>땅마다 답</button>
-          <button onClick={() => go("climate")}><span><CloudRain /></span>가뭄·큰비</button>
-          <button onClick={() => go("drainage")}><span><Shovel /></span>배수 공사</button>
-          <button onClick={() => go("method")}><span><BookOpen /></span>계산 방법</button>
+          <button onClick={() => go("input")}><span><img src="/figma/icon-calc.webp" alt="" width={44} height={48} /></span>손익 계산</button>
+          <button onClick={() => go("recommend")}><span><img src="/figma/icon-sprout.webp" alt="" width={52} height={44} /></span>작물 추천</button>
+          <button onClick={() => go("support")}><span><img src="/figma/icon-diary.webp" alt="" width={48} height={47} /></span>지원 제도</button>
+          <button onClick={() => go("farm")}><span><img src="/figma/rice.webp" alt="" width={40} height={48} /></span>내 농장</button>
+        </div>
+        <div className="more">
+          <button onClick={() => go("grid")}><LayoutGrid size={16} />땅마다 다른 답</button>
+          <button onClick={() => go("climate")}><CloudRain size={16} />가뭄·큰비</button>
+          <button onClick={() => go("drainage")}><Shovel size={16} />배수 공사</button>
+          <button onClick={() => go("method")}><BookOpen size={16} />계산 방법</button>
         </div>
         <button className="disaster" onClick={() => go("disaster")}><strong>재해를 입었나요?</strong>
           <p>그대로 두기·되살리기·다시 심기·비워 두기를 견줘요</p></button>
@@ -310,13 +331,14 @@ export default function App() {
         {conds}
         <div className="section-title"><h2>내 농장</h2><span><MapPin size={15} /> {landText(input)} · {input.area_py.toLocaleString("ko-KR")}평</span></div>
         {farm && calc ? <button className="farm" onClick={() => go("farm")}><h3>{farm.label}</h3><div className="farm-content">
-          <div className="ring" style={{ background: `conic-gradient(#55bf6b ${progress}%,#dfe8df ${progress}%)` }}><div>
-            <small>{c0?.name} 진행 {progress}%</small><strong>{c0?.days}일째</strong><small>{c0?.length}일 중 · {c0 && mmdd(c0.sown)} 심음</small></div></div>
+          <div className="ring" style={{ background: `conic-gradient(#6db872 ${progress}%,#dfe8df ${progress}%)` }}><div>
+            <small>{c0 && (c0.length - c0.days > 0 ? `수확까지 ${c0.length - c0.days}일` : `${c0.name} 수확 무렵`)}</small><strong>{c0?.days}일째</strong><small>{c0 && mmdd(c0.sown)} 심음</small></div></div>
           <div className="farm-details">
             <p>지금 전망 <b>{won(farm.now.mid)}</b></p>
+            <p>{c0?.name} 진행 <b>{progress}%</b></p>
             <p>심을 때보다 <b>{signedWon(farm.now.mid - farm.first.mid)}</b></p>
             <p>시작 자금 <b>{won(opt(farm.label)?.need90)}</b></p>
-            <p>농장 평수 <b>{farm.area_py.toLocaleString("ko-KR")}평</b></p>
+
           </div></div>
           <small>올해 · 균형 추천을 심었다고 보고 {mmdd(farm.today)}까지 실제 날씨 반영 · 눌러서 자세히</small></button>
           : <div className="farm">{farmErr ? errBox(farmErr, () => { if (calc) setFarmPlan(calc.balanced.label); setFarmYear(2026); setFarmSown({}); setFarmToday(""); runFarm(input, "balanced", 2026, { home: true }); }) : <small>내 농장을 계산하는 중이에요…</small>}</div>}
@@ -439,6 +461,8 @@ export default function App() {
     const shown = showAll ? uniq : uniq.slice(0, 6);
     const o = opt(calLabel) ?? calc.balanced;
     return <main className="content">
+      <section className="page-hero"><div><p>다른 작물을 심으면</p><h2>손익이 어떻게 달라질까요?</h2></div>
+        <img src="/figma/calculator.webp" alt="" width={112} height={98} /></section>
       {staleError}
       {summary}
       {conds}
@@ -502,7 +526,7 @@ export default function App() {
       <h2>원하는 쪽을 골라 보세요</h2>
       <p className="muted">카드를 누르면 그 안의 돈 흐름 달력을 볼 수 있어요.</p>
       <div className="stack">
-        <article className="recommend green tap" {...card(b)}><b>수익과 안정의 균형 (추천)</b><h3>{b.label}</h3>
+        <article className="recommend pick tap" {...card(b)}><b>수익과 안정의 균형 (추천)</b><h3>{b.label}</h3>
           <p>한 해 평균 {won(b.mean)} · 나쁜 해 평균 {won(b.bad20)}</p>
           <p>필요한 시작 자금 {won(b.need90)} · 가진 돈으로 버티는 경우 {pct(b.survive)}</p></article>
         <article className="recommend peach tap" {...card(m)}><b>수익을 더 내고 싶다면?</b><h3>{m.label}</h3>
@@ -549,6 +573,8 @@ export default function App() {
     if (calc && !noSoy && [calc.balanced, cur].some(o => o?.parts.some(p => p.crop === "콩(논 재배)"))) mine.add("논콩");
     const list = [...SUPPORTS].sort((a, b) => Number(b.tags.some(t => mine.has(t))) - Number(a.tags.some(t => mine.has(t))));
     return <main className="content">
+      <section className="page-hero"><div><p>보험·지원 제도</p><h2>내 계산과 관련 있는 제도부터 보여 드려요</h2></div>
+        <img src="/figma/rice.webp" alt="" width={67} height={80} /></section>
       <p className="muted">계산 결과(가뭄·큰비·작물)와 관련 있는 제도를 위에 놓았어요. 신청 자격·기간·피해 인정 여부는 확인하지 않았으니, 신청 전 링크와 담당 기관에서 꼭 확인하세요. 2026년 안내 기준이라 지역·연도마다 다를 수 있어요.</p>
       <div className="stack">{list.map(s => {
         const hit = s.tags.some(t => mine.has(t));
@@ -815,11 +841,11 @@ export default function App() {
     <ul className="limits">{LIMITS.map(l => <li key={l}>{l}</li>)}</ul>
   </main>;
 
-  return <div className="app">
+  return <div className={screen === "home" ? "app" : "app sub"}>
     {screen === "home" ? homeView() : <>
       <header className="page-header"><button aria-label="뒤로 가기" onClick={goBack}><ChevronLeft /></button>
         <h1>{TITLE[screen]}</h1>
-        {screen !== "input" && <button className="edit-link" onClick={() => { setDraft(input); go("input"); }}>{landText(input)} · {calc?.input.current_name ?? ""} ▾</button>}
+        {screen !== "input" && <button className="edit-link" onClick={() => { setDraft(input); go("input"); }}>{landText(input)}{calc ? ` · ${calc.input.current_name}` : ""} ▾</button>}
       </header>
       {screen === "input" && inputView()}
       {screen === "result" && resultView()}

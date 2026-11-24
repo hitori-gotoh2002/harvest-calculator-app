@@ -38,6 +38,23 @@ class InputError(ValueError):
     """화면에 그대로 보여 줄 수 있는 입력 오류."""
 
 
+def num(d: dict, key: str, default: float, lo: float, hi: float, label: str, allow_none: bool = False):
+    """숫자 입력을 안전하게 읽는다. 비었거나(None·'') 숫자가 아니거나 범위를 벗어나면 화면용 오류."""
+    v = d.get(key, default)
+    if v is None or v == "":
+        if allow_none:
+            return None
+        v = default
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        raise InputError(f"{label}에는 숫자를 넣어 주세요")
+    if x != x or not lo <= x <= hi:  # NaN 또는 범위 밖
+        rng = f"{lo * 100:,.0f}~{hi * 100:,.0f}%" if (lo, hi) == (0, 1) else f"{lo:,.0f}~{hi:,.0f}"
+        raise InputError(f"{label}은(는) {rng} 사이로 넣어 주세요")
+    return x
+
+
 @contextmanager
 def scenario(d: dict):
     """화면에서 바꾼 조건(관정 크기·올해 값·입금 방식)을 엔진 가정에 잠깐 넣었다가 되돌린다.
@@ -179,13 +196,11 @@ def field_from(d: dict):
     sales = d.get("sales", "공판장까지")
     if sales not in E.SALES_OK:
         raise InputError("판로를 다시 골라 주세요")
-    area_py = float(d.get("area_py", 3000))
-    if not 100 <= area_py <= 100000:
-        raise InputError("면적은 100~100,000평 사이로 넣어 주세요")
+    area_py = num(d, "area_py", 3000, 100, 100000, "면적(평)")
     # 직불금 자격이 없는 작물(예: 2026년부터 백태는 전년도 이행 농가만) → 그 작물 직불금을 뺀다
     sub = {}
     for c in d.get("no_subsidy") or []:
-        if c in set(E.crops()["작물"]) and c != current:
+        if land == "논" and c in set(E.crops()["작물"]) and c != current:  # 직불금은 논에서만 받음
             sub[c] = -float(E.crop_row(c)["직불_천원"])
     return E.Field(region=region, land=land, water=water, drainage=drainage, current=current,
                    free_from=PREV[prev], labor=labor, sales=sales, area_10a=area_py / 300, local_subsidy=sub)
@@ -313,9 +328,9 @@ def calc(d: dict) -> dict:
     decision = decision_of(d, f)
     excl = excl_of(d)
     k = f.area_10a / 10
-    money = float(d.get("money", 1000))
-    living = float(d.get("living", 100))
-    need = float(d.get("need", 200))
+    money = num(d, "money", 1000, 0, 1_000_000, "가진 돈")
+    living = num(d, "living", 100, 0, 10_000, "생활비")
+    need = num(d, "need", 200, 0, 1_000_000, "남겨야 할 돈")
     try:
         r = E.compare(f, YEAR, decision, excl)
     except ValueError as e:
@@ -385,11 +400,11 @@ def farm(d: dict) -> dict:
     decision = decision_of(d, f)
     excl = excl_of(d)
     k = f.area_10a / 10
-    year = int(d.get("year", YEAR))
+    year = int(num(d, "year", YEAR, 1992, YEAR, "연도"))
     if not 1992 <= year <= YEAR:
         raise InputError("연도는 1992~2026년 사이로 골라 주세요")
     alt = d.get("alt") or f.current
-    share = float(d.get("share", 0.0 if alt == f.current else 1.0))
+    share = num(d, "share", 0.0 if alt == f.current else 1.0, 0, 1, "섞는 비율")
     plan = dict(plan="", alt=alt, share=share)
     sown = d.get("sown")
     try:
@@ -439,7 +454,7 @@ def disaster(d: dict) -> dict:
     crop = d.get("crop") or f.current
     if crop not in summer_crops(f.land):
         raise InputError("피해 입은 작물을 다시 골라 주세요")
-    year = int(d.get("year", YEAR))
+    year = int(num(d, "year", YEAR, 1992, YEAR, "연도"))
     if not 1992 <= year <= YEAR:
         raise InputError("연도는 1992~2026년 사이로 골라 주세요")
     sown, hit = d.get("sown", "06-10"), d.get("hit", "07-20")
@@ -447,12 +462,13 @@ def disaster(d: dict) -> dict:
         raise InputError(f"재해 난 날은 날씨 자료가 있는 {last_weather_day(f.region):%m월 %d일}까지 넣을 수 있어요")
     if E.doy(hit) <= E.doy(sown):
         raise InputError("재해 난 날은 심은 날 뒤여야 해요")
-    dmg = d.get("damage")
     cost0 = float(E.crop_row(crop)["경영비_천원"])
-    fix_cost = float(d["fix_cost"]) / k if d.get("fix_cost") is not None else 0.1 * cost0
-    fix_share = float(d.get("fix_share", 0.3))
-    fix_sup = float(d.get("fix_support", 0)) / k
-    rep_sup = float(d.get("replant_support", 0)) / k
+    fc = num(d, "fix_cost", 0, 0, 1_000_000, "되살리는 비용", allow_none=True)
+    fix_cost = fc / k if fc is not None else 0.1 * cost0
+    fix_share = num(d, "fix_share", 0.3, 0, 1, "되살릴 수 있는 몫")
+    fix_sup = num(d, "fix_support", 0, 0, 1_000_000, "농약대 등 지원") / k
+    rep_sup = num(d, "replant_support", 0, 0, 1_000_000, "대파대 등 지원") / k
+    dmg = num(d, "damage", 0, 0, 1, "피해율", allow_none=True)
     fs = replace(f, sown={crop: sown})
     try:
         r = E.after_disaster(fs, year, crop, hit, None if dmg is None else float(dmg), fix_cost, fix_share, fix_sup, rep_sup,
@@ -478,8 +494,9 @@ def drainage(d: dict) -> dict:
     decision = decision_of(d, f)
     excl = excl_of(d)
     k = f.area_10a / 10
-    cost = float(d["cost"]) if d.get("cost") is not None else 650.0 * k  # 무굴착 암거 ha당 650만 원(연구 시험 값)
-    support = float(d.get("support", 0) or 0) / 100
+    c_in = num(d, "cost", 0, 0, 10_000_000, "공사비", allow_none=True)
+    cost = c_in if c_in is not None else 650.0 * k  # 무굴착 암거 ha당 650만 원(연구 시험 값)
+    support = num(d, "support", 0, 0, 100, "지원받는 몫") / 100
     own = cost * (1 - support)
     rows = []
     for lv in ("나쁨", "보통", "좋음"):

@@ -78,3 +78,5 @@ body{word-break:keep-all;overflow-wrap:break-word}
 .plan-title{flex-wrap:wrap;row-gap:6px}
 .plan-title h3{flex:1 1 auto}
 .recommend .same{font-size:12px;color:#59665d;margin-top:6px}
+.warn{background:#fff4e5;color:#8a4b00;border-radius:10px;padding:8px 10px;font-size:12px}
+details{background:#fff;border-radius:12px;padding:10px 12px;margin:8px 0}details summary{cursor:pointer;font-weight:600;font-size:14px}details[open] summary{margin-bottom:8px}

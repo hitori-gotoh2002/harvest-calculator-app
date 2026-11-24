@@ -200,6 +200,23 @@ class 입력_오류는_안내로(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn("11월 5일", out["error"])
 
+    def test_지금_작물이_논콩이어도_직불금_자격_없음이_적용됨(self):
+        # GPT 검토 1번: 올해 처음 논콩을 심는 농가(작년 백태 직불 미이행)는 논콩 직불금(3,000평 200만 원)을 못 받는다
+        base = by_label(R["calc"](dict(current=SOY)))["논콩 그대로"]["mean"]
+        out = R["calc"](dict(current=SOY, no_subsidy=[SOY]))
+        self.assertEqual(out["input"]["no_subsidy"], [SOY])
+        self.assertEqual(base - by_label(out)["논콩 그대로"]["mean"], 200)
+
+    def test_잘못된_자료형과_없는_날짜는_400(self):
+        # GPT 검토 7번
+        cases = [("calc", {"rev_pct": {"벼": "abc"}}), ("calc", {"rev_pct": [1, 2]}), ("calc", {"no_subsidy": "콩"}),
+                 ("disaster", {"hit": "02-30"}), ("disaster", {"sown": "13-01"}), ("farm", {"today": "02-30"}),
+                 ("farm", {"alt": "없는작물", "share": 1}), ("farm", {"sown": {"벼": "99-99"}}), ("calc", {"decision": "02-30"})]
+        for name, body in cases:
+            with self.subTest(name=name, body=body):
+                code, out = http_util.run(name, json.dumps(body).encode())
+                self.assertEqual(code, 400, out.get("error"))
+
     def test_밭에는_콩_직불금_없음이_적용되지_않음(self):
         out = R["calc"](dict(land="밭", water="관정", current="고추", prev="없음", no_subsidy=[SOY]))
         self.assertEqual(out["input"]["no_subsidy"], [])

@@ -73,15 +73,23 @@ def scenario(d: dict):
             raise InputError("관정 크기를 다시 골라 주세요")
         E.ASSUME["pump_mm_per_day"] = PUMP[pump]
         names = set(crops["작물"])
-        for crop, pct in (d.get("rev_pct") or {}).items():
+        rev = d.get("rev_pct") or {}
+        if not isinstance(rev, dict):
+            raise InputError("올해 값은 {작물: %} 형식으로 넣어 주세요")
+        for crop, pct in rev.items():
             if crop not in names:
                 raise InputError(f"올해 값을 넣은 작물({crop})을 찾을 수 없어요")
-            pct = float(pct or 0)
-            if not -50 <= pct <= 100:
+            try:
+                pct = float(pct or 0)
+            except (TypeError, ValueError):
+                raise InputError(f"{nm(crop)} 올해 값 변화에는 숫자를 넣어 주세요")
+            if pct != pct or not -50 <= pct <= 100:
                 raise InputError("올해 값 변화는 −50%~+100% 사이로 넣어 주세요")
             i = crops.index[crops["작물"] == crop][0]
             crops.loc[i, "총수입_천원"] = float(saved[1].loc[i]) * (1 + pct / 100)
         mode, pc = d.get("pay_mode", "default"), d.get("pay_crop")
+        if pc is not None and not isinstance(pc, str):
+            raise InputError("대금 방식을 바꿀 작물을 다시 골라 주세요")
         if mode not in PAY_MODES:
             raise InputError("대금 받는 방식을 다시 골라 주세요")
         if pc and mode != "default":
@@ -136,6 +144,17 @@ def fund_need(L, living=0.0, need=200.0):
 
 
 # ---------------------------------------------------------------- 이름·입력
+def mmdd_ok(v, label: str) -> str:
+    """'MM-DD' 날짜를 검사한다 (2026년 달력에 있는 날만, 2월 29일 없음). 틀리면 화면용 오류."""
+    if not isinstance(v, str) or len(v) != 5 or v[2] != "-" or not (v[:2] + v[3:]).isdigit():
+        raise InputError(f"{label}을 다시 넣어 주세요 (예: 06-10)")
+    try:
+        date(YEAR, int(v[:2]), int(v[3:]))
+    except ValueError:
+        raise InputError(f"{label}은 없는 날짜예요 ({v})")
+    return v
+
+
 def nm(c: str) -> str:
     return "논콩" if c == "콩(논 재배)" else c
 
@@ -199,9 +218,13 @@ def field_from(d: dict):
         raise InputError("판로를 다시 골라 주세요")
     area_py = num(d, "area_py", 3000, 100, 100000, "면적(평)")
     # 직불금 자격이 없는 작물(예: 2026년부터 백태는 전년도 이행 농가만) → 그 작물 직불금을 뺀다
+    # 지금(또는 올해 심으려는) 작물이어도 적용한다: 올해 처음 논콩을 심는 농가도 2026년 백태 직불금을 못 받는다
+    ns = d.get("no_subsidy") or []
+    if not isinstance(ns, list) or not all(isinstance(c, str) for c in ns):
+        raise InputError("직불금 자격은 작물 이름 목록으로 넣어 주세요")
     sub = {}
-    for c in d.get("no_subsidy") or []:
-        if land == "논" and c in set(E.crops()["작물"]) and c != current:  # 직불금은 논에서만 받음
+    for c in ns:
+        if land == "논" and c in set(E.crops()["작물"]):  # 직불금은 논에서만 받음
             sub[c] = -float(E.crop_row(c)["직불_천원"])
     return E.Field(region=region, land=land, water=water, drainage=drainage, current=current,
                    free_from=PREV[prev], labor=labor, sales=sales, area_10a=area_py / 300, local_subsidy=sub)
@@ -210,11 +233,7 @@ def field_from(d: dict):
 def decision_of(d: dict, f) -> str:
     dec = d.get("decision")
     if dec:
-        try:
-            date(YEAR, int(dec[:2]), int(dec[3:5]))
-        except (ValueError, TypeError):
-            raise InputError("작부를 정하는 날을 다시 넣어 주세요 (예: 06-01)")
-        return dec
+        return mmdd_ok(dec, "작부를 정하는 날")
     return "06-01" if f.free_from == "06-10" else "04-01"
 
 
@@ -448,18 +467,29 @@ def farm(d: dict) -> dict:
         alt, share = p["alt"], (p["share"] if f.current in rb["results"] else 1.0)
     else:
         alt = d.get("alt") or f.current
+        if alt not in summer_crops(f.land):
+            raise InputError("심은 작물을 다시 골라 주세요")
         share = num(d, "share", 0.0 if alt == f.current else 1.0, 0, 1, "섞는 비율")
     plan = dict(plan="", alt=alt, share=share)
     sown = d.get("sown")
+    if sown is not None:
+        if not isinstance(sown, dict):
+            raise InputError("심은 날은 {작물: 'MM-DD'} 형식으로 넣어 주세요")
+        for c, v in sown.items():
+            if c not in summer_crops(f.land):
+                raise InputError("심은 날을 넣은 작물을 다시 골라 주세요")
+            mmdd_ok(v, f"{nm(c)} 심은 날")
     try:
-        fs = replace(f, sown=sown) if sown else R.with_sown(f, plan, decision)
+        fs = R.with_sown(f, plan, decision)  # 안에 든 작물의 기본 심는 날
     except ValueError as e:
         raise InputError(f"이 날짜에 심을 수 없어요: {e}") from e
+    if sown:  # 직접 넣은 심은 날로 바꾼다 (안에 없는 작물은 무시)
+        fs = replace(fs, sown={c: sown.get(c, v) for c, v in fs.sown.items()})
     last = last_weather_day(f.region) if year == YEAR else date(year, 12, 31)
     first = min(E.doy(x) for x in fs.sown.values())
     harvest = max(E.doy(x) + int(E.crop_row(c)["생육일수"]) for c, x in fs.sown.items())
     limit = min(E.doy(last.strftime("%m-%d")), harvest, 364)
-    today = d.get("today") or R.mmdd(limit)
+    today = mmdd_ok(d["today"], "기준일") if d.get("today") else R.mmdd(limit)
     if E.doy(today) > limit:
         today = R.mmdd(limit)
     end = E.doy(today)
@@ -501,7 +531,7 @@ def disaster(d: dict) -> dict:
     year = int(num(d, "year", YEAR, 1992, YEAR, "연도"))
     if not 1992 <= year <= YEAR:
         raise InputError("연도는 1992~2026년 사이로 골라 주세요")
-    sown, hit = d.get("sown", "06-10"), d.get("hit", "07-20")
+    sown, hit = mmdd_ok(d.get("sown", "06-10"), "심은 날"), mmdd_ok(d.get("hit", "07-20"), "재해 난 날")
     if year == YEAR and E.doy(hit) > E.doy(last_weather_day(f.region).strftime("%m-%d")):
         raise InputError(f"재해 난 날은 날씨 자료가 있는 {last_weather_day(f.region).month}월 {last_weather_day(f.region).day}일까지 넣을 수 있어요")
     if E.doy(hit) <= E.doy(sown):

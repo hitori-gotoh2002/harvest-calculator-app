@@ -4,6 +4,6 @@
     { "src": "api/*.py", "use": "@vercel/python", "config": { "includeFiles": "engine/**", "maxDuration": 60 } }
   ],
   "routes": [
-    { "src": "/api/(meta|calc|flips|farm|disaster)/?", "dest": "/api/$1.py" }
+    { "src": "/api/([a-z]+)/?", "dest": "/api/$1.py" }
   ]
 }
